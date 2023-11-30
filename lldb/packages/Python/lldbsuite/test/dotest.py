@@ -453,6 +453,8 @@ def registerFaulthandler():
         return
 
     faulthandler.enable()
+    faulthandler.dump_traceback_later(60)
+
     # faulthandler.register is not available on Windows.
     if getattr(faulthandler, "register", None):
         faulthandler.register(signal.SIGTERM, chain=True)
