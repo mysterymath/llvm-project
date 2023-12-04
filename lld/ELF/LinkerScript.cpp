@@ -158,6 +158,14 @@ static void expandMemoryRegion(MemoryRegion *memRegion, uint64_t size,
   memRegion->curPos += size;
 }
 
+// Determine if expanding the memory region by the specified size would overflow
+// it.
+static bool wouldOverflowMemoryRegion(MemoryRegion *memRegion, uint64_t size) {
+  uint64_t newPos = memRegion->curPos + size;
+  uint64_t regionEnd = memRegion->getOrigin() + memRegion->getLength();
+  return newPos > regionEnd;
+}
+
 void LinkerScript::expandMemoryRegions(uint64_t size) {
   if (state->memRegion)
     expandMemoryRegion(state->memRegion, size, state->outSec->name);
@@ -169,6 +177,14 @@ void LinkerScript::expandMemoryRegions(uint64_t size) {
 void LinkerScript::expandOutputSection(uint64_t size) {
   state->outSec->size += size;
   expandMemoryRegions(size);
+}
+
+bool LinkerScript::wouldOverflowMemoryRegions(uint64_t size) const {
+  if (state->memRegion && wouldOverflowMemoryRegion(state->memRegion, size))
+    return true;
+  if (state->lmaRegion && wouldOverflowMemoryRegion(state->lmaRegion, size))
+    return true;
+  return false;
 }
 
 void LinkerScript::setDot(Expr e, const Twine &loc, bool inSec) {
@@ -492,12 +508,13 @@ static void sortInputSections(MutableArrayRef<InputSectionBase *> vec,
 }
 
 // Compute and remember which sections the InputSectionDescription matches.
-SmallVector<InputSectionBase *, 0>
-LinkerScript::computeInputSections(const InputSectionDescription *cmd,
-                                   ArrayRef<InputSectionBase *> sections) {
+SmallVector<InputSectionBase *, 0> LinkerScript::computeInputSections(
+    const InputSectionDescription *cmd, ArrayRef<InputSectionBase *> sections,
+    const OutputSection &outCmd) {
   SmallVector<InputSectionBase *, 0> ret;
   SmallVector<size_t, 0> indexes;
   DenseSet<size_t> seen;
+  DenseSet<InputSectionBase *> spills;
   auto sortByPositionThenCommandLine = [&](size_t begin, size_t end) {
     llvm::sort(MutableArrayRef<size_t>(indexes).slice(begin, end - begin));
     for (size_t i = begin; i != end; ++i)
@@ -513,11 +530,32 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
     size_t sizeBeforeCurrPat = ret.size();
 
     for (size_t i = 0, e = sections.size(); i != e; ++i) {
-      // Skip if the section is dead or has been matched by a previous input
-      // section description or a previous pattern.
+      // Skip if the section is dead or has been matched by a previous pattern
+      // in this input section description.
       InputSectionBase *sec = sections[i];
-      if (!sec->isLive() || sec->parent || seen.contains(i))
+      if (!sec->isLive() || seen.contains(i))
         continue;
+
+      if (sec->parent) {
+        // Skip if not allowing multiple matches.
+        if (!config->enableNonContiguousRegions)
+          continue;
+
+        // Disallow spilling into /DISCARD/; special handling would be needed
+        // for this in address assignment, and the semantics are nebulous.
+        if (outCmd.name == "/DISCARD/")
+          continue;
+
+        // Skip if the section's first match was /DISCARD/; such sections are
+        // always discarded.
+        if (sec->parent->name == "/DISCARD/")
+          continue;
+
+        // Skip if the section was already matched by a different input section
+        // description within this output section.
+        if (sec->parent == &outCmd)
+          continue;
+      }
 
       // For --emit-relocs we have to ignore entries like
       //   .rela.dyn : { *(.rela.data) }
@@ -538,6 +576,8 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
         continue;
 
       ret.push_back(sec);
+      if (sec->parent)
+        spills.insert(sec);
       indexes.push_back(i);
       seen.insert(i);
     }
@@ -563,6 +603,24 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
   // Matched sections after the last SORT* are sorted by (--sort-alignment,
   // input order).
   sortByPositionThenCommandLine(sizeAfterPrevSort, ret.size());
+
+  // Replace matches after the first with potential spill sections.
+  if (!spills.empty()) {
+    for (InputSectionBase *&sec : ret) {
+      if (!spills.contains(sec))
+        continue;
+      SpillInputSection *sis = make<SpillInputSection>(
+          sec, const_cast<InputSectionDescription *>(cmd));
+
+      auto res = spillLists.try_emplace(sec, SpillList{sis, sis});
+      if (!res.second) {
+        SpillInputSection *&tail = res.first->second.tail;
+        tail = tail->next = sis;
+      }
+      sec = sis;
+    }
+  }
+
   return ret;
 }
 
@@ -585,7 +643,7 @@ void LinkerScript::discardSynthetic(OutputSection &outCmd) {
         part.armExidx->exidxSections.end());
     for (SectionCommand *cmd : outCmd.commands)
       if (auto *isd = dyn_cast<InputSectionDescription>(cmd))
-        for (InputSectionBase *s : computeInputSections(isd, secs))
+        for (InputSectionBase *s : computeInputSections(isd, secs, outCmd))
           discard(*s);
   }
 }
@@ -596,7 +654,7 @@ LinkerScript::createInputSectionList(OutputSection &outCmd) {
 
   for (SectionCommand *cmd : outCmd.commands) {
     if (auto *isd = dyn_cast<InputSectionDescription>(cmd)) {
-      isd->sectionBases = computeInputSections(isd, ctx.inputSections);
+      isd->sectionBases = computeInputSections(isd, ctx.inputSections, outCmd);
       for (InputSectionBase *s : isd->sectionBases)
         s->parent = &outCmd;
       ret.insert(ret.end(), isd->sectionBases.begin(), isd->sectionBases.end());
@@ -920,6 +978,13 @@ void LinkerScript::diagnoseMissingSGSectionAddress() const {
     error("no address assigned to the veneers output section " + sec->name);
 }
 
+void LinkerScript::copySpillList(InputSectionBase *dst, InputSectionBase *src) {
+  auto i = spillLists.find(src);
+  if (i == spillLists.end())
+    return;
+  spillLists.try_emplace(dst, i->second);
+}
+
 // This function searches for a memory region to place the given output
 // section in. If found, a pointer to the appropriate memory region is
 // returned in the first member of the pair. Otherwise, a nullptr is returned.
@@ -1075,18 +1140,62 @@ void LinkerScript::assignOffsets(OutputSection *sec) {
     // Handle a single input section description command.
     // It calculates and assigns the offsets for each section and also
     // updates the output section size.
-    for (InputSection *isec : cast<InputSectionDescription>(cmd)->sections) {
+
+    DenseSet<InputSection*> spills;
+    auto &sections = cast<InputSectionDescription>(cmd)->sections;
+    for (InputSection *isec : sections) {
       assert(isec->getParent() == sec);
+
+      // Skip all possible spills.
+      if (auto *stub = dyn_cast<SpillInputSection>(isec))
+        continue;
+
       const uint64_t pos = dot;
       dot = alignToPowerOf2(dot, isec->addralign);
       isec->outSecOff = dot - sec->addr;
       dot += isec->getSize();
+
+      // Try to spill instead of overflowing.
+      if (config->enableNonContiguousRegions &&
+          wouldOverflowMemoryRegions(dot - pos)) {
+        // Find the next spill location.
+        if (auto it = spillLists.find(isec); it != spillLists.end()) {
+          SpillList &list = it->second;
+
+          SpillInputSection *spill = list.head;
+          if (!spill->next)
+            spillLists.erase(isec);
+          else
+            list.head = spill->next;
+
+          // Roll dot back to its position before the section was considered.
+          dot = pos;
+
+          spills.insert(isec);
+
+          // Replace the next spill location with the spilled section and adjust
+          // its properties to match the new location.
+          *llvm::find(spill->cmd->sections, spill) = isec;
+          isec->parent = spill->parent;
+          // The alignment of the spill section may have diverged from the
+          // original, but correct assignment requires the spill's alignment,
+          // not the original.
+          isec->addralign = spill->addralign;
+
+          continue;
+        }
+      }
 
       // Update output section size after adding each section. This is so that
       // SIZEOF works correctly in the case below:
       // .foo { *(.aaa) a = SIZEOF(.foo); *(.bbb) }
       expandOutputSection(dot - pos);
     }
+
+    // Remove any spilled sections.
+    if (!spills.empty())
+      llvm::erase_if(sections,
+                     [&](InputSection *isec) { return spills.contains(isec); });
   }
 
   // If .relro_padding is present, round up the end to a common-page-size
@@ -1371,6 +1480,25 @@ const Defined *LinkerScript::assignAddresses() {
 
   state = nullptr;
   return getChangedSymbolAssignment(oldValues);
+}
+
+// Erase any potential spill sections that were not used.
+void LinkerScript::eraseSpillSections() {
+  if (spillLists.empty())
+    return;
+
+  // Collect the set of input section descriptions that contain potential
+  // spills.
+  DenseSet<InputSectionDescription *> cmds;
+  for (const auto &[_, list] : spillLists)
+    for (SpillInputSection *s = list.head; s; s = s->next)
+      cmds.insert(s->cmd);
+
+  for (InputSectionDescription *cmd : cmds)
+    llvm::erase_if(cmd->sections,
+                   [](InputSection *s) { return isa<SpillInputSection>(s); });
+
+  spillLists.clear();
 }
 
 // Creates program headers as instructed by PHDRS linker script command.

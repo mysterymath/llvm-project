@@ -9,6 +9,7 @@
 #include "InputSection.h"
 #include "Config.h"
 #include "InputFiles.h"
+#include "LinkerScript.h"
 #include "OutputSections.h"
 #include "Relocations.h"
 #include "SymbolTable.h"
@@ -161,6 +162,7 @@ uint64_t SectionBase::getOffset(uint64_t offset) const {
   }
   case Regular:
   case Synthetic:
+  case Spill:
     return cast<InputSection>(this)->outSecOff + offset;
   case EHFrame: {
     // Two code paths may reach here. First, clang_rt.crtbegin.o and GCC
@@ -306,6 +308,12 @@ std::string InputSectionBase::getObjMsg(uint64_t off) const {
   return (filename + ":(" + name + "+0x" + utohexstr(off) + ")" + archive)
       .str();
 }
+
+SpillInputSection::SpillInputSection(InputSectionBase *source,
+                                     InputSectionDescription *cmd)
+    : InputSection(source->file, source->flags, source->type, source->addralign,
+                   {}, source->name, SectionBase::Spill),
+      cmd(cmd) {}
 
 InputSection InputSection::discarded(nullptr, 0, 0, 0, ArrayRef<uint8_t>(), "");
 

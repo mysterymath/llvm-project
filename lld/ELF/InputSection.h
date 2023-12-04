@@ -47,7 +47,7 @@ template <class ELFT> struct RelsOrRelas {
 // sections.
 class SectionBase {
 public:
-  enum Kind { Regular, Synthetic, EHFrame, Merge, Output };
+  enum Kind { Regular, Synthetic, EHFrame, Merge, Output, Spill };
 
   Kind kind() const { return (Kind)sectionKind; }
 
@@ -364,7 +364,8 @@ public:
 
   static bool classof(const SectionBase *s) {
     return s->kind() == SectionBase::Regular ||
-           s->kind() == SectionBase::Synthetic;
+           s->kind() == SectionBase::Synthetic ||
+           s->kind() == SectionBase::Spill;
   }
 
   // Write this section to a mmap'ed file, assuming Buf is pointing to
@@ -405,6 +406,20 @@ private:
   void copyRelocations(uint8_t *buf, llvm::iterator_range<RelIt> rels);
 
   template <class ELFT> void copyShtGroup(uint8_t *buf);
+};
+
+class SpillInputSection : public InputSection {
+public:
+  InputSectionDescription *cmd;
+
+  // Next spill location for the same source input section.
+  SpillInputSection *next = nullptr;
+
+  SpillInputSection(InputSectionBase *source, InputSectionDescription *isd);
+
+  static bool classof(const SectionBase *sec) {
+    return sec->kind() == InputSectionBase::Spill;
+  }
 };
 
 static_assert(sizeof(InputSection) <= 160, "InputSection is too big");
