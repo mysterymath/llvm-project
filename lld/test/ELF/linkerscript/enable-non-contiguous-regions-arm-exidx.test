@@ -6,16 +6,17 @@ RUN: llvm-mc -filetype=obj -triple=armv7a-none-linux-gnueabi %t/test.s -o %t/tes
 RUN: ld.lld -T %t/test.ld %t/test.o -o %t/test --enable-non-contiguous-regions
 RUN: llvm-readobj -x .ARM.exidx %t/test | FileCheck %s
 
-CHECK:      20000000 08849780 1c000000 10849880
-CHECK-NEXT: 18000000 20849980 14000000 01000000
+CHECK:      28000000 08849780 24000000 10849880
+CHECK-NEXT: 20000000 20849980 e8ffff01 40849a80
+CHECK-NEXT: e4ffff01 01000000
 
 #--- test.ld
 MEMORY {
   exidx : ORIGIN = 0, LENGTH = 40
-  a : ORIGIN = 40, LENGTH = 4
-  b : ORIGIN = 44, LENGTH = 4
-  c : ORIGIN = 48, LENGTH = 4
-  d : ORIGIN = 0x2000000, LENGTH = 4
+  a : ORIGIN = 40, LENGTH = 8
+  b : ORIGIN = 48, LENGTH = 4
+  c : ORIGIN = 52, LENGTH = 4
+  d : ORIGIN = 0x3000000, LENGTH = 4
 }
 
 SECTIONS {
