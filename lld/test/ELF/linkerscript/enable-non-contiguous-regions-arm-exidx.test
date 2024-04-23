@@ -1,5 +1,5 @@
-# Even if spilling changes the relative order of input sections, the final
-# .ARM.exidx table must still be built in the correct order.
+# If a thunk causes additional spilling, and that reorders input sections, the
+# .ARM.exidx table must be rebuilt using the new order.
 
 RUN: split-file %s %t
 RUN: llvm-mc -filetype=obj -triple=armv7a-none-linux-gnueabi %t/test.s -o %t/test.o
@@ -11,10 +11,11 @@ CHECK-NEXT: 18000000 20849980 14000000 01000000
 
 #--- test.ld
 MEMORY {
-  exidx : ORIGIN = 0, LENGTH = 32
-  a : ORIGIN = 32, LENGTH = 4
-  b : ORIGIN = 36, LENGTH = 4
-  c : ORIGIN = 40, LENGTH = 4
+  exidx : ORIGIN = 0, LENGTH = 40
+  a : ORIGIN = 40, LENGTH = 4
+  b : ORIGIN = 44, LENGTH = 4
+  c : ORIGIN = 48, LENGTH = 4
+  d : ORIGIN = 0x2000000, LENGTH = 4
 }
 
 SECTIONS {
@@ -22,6 +23,7 @@ SECTIONS {
   .first_chance : { *(.text .text.f2) } >a
   .text.f1 : { *(.text.f1) } >b
   .last_chance : { *(.text.f2) } >c
+  .text.f3 : { *(.text.f3) } >d
 }
 
 #--- test.s
@@ -30,7 +32,7 @@ SECTIONS {
  .globl _start
 _start:
  .fnstart
- bx lr
+ bl f3
  .save {r7, lr}
  .setfp r7, sp, #0
  .fnend
@@ -51,4 +53,13 @@ f2:
  bx lr
  .save {r9, lr}
  .setfp r9, sp, #0
+ .fnend
+
+ .section .text.f3, "ax", %progbits
+ .globl f3
+f3:
+ .fnstart
+ bx lr
+ .save {r10, lr}
+ .setfp r10, sp, #0
  .fnend
