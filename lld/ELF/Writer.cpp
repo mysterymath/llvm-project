@@ -1703,6 +1703,7 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
   for (;;) {
     bool changed = target->needsThunks ? tc.createThunks(pass, outputSections)
                                        : target->relaxOnce(pass);
+    changed |= script->spillSections();
     ++pass;
 
     // With Thunk Size much smaller than branch range we expect to

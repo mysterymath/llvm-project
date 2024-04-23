@@ -345,6 +345,7 @@ public:
 
   bool shouldKeep(InputSectionBase *s);
   const Defined *assignAddresses();
+  bool spillSections();
   void eraseSpillSections();
   void allocateHeaders(SmallVector<PhdrEntry *, 0> &phdrs);
   void processSectionCommands();

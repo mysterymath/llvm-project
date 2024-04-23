@@ -1150,7 +1150,7 @@ void LinkerScript::assignOffsets(OutputSection *sec) {
       assert(isec->getParent() == sec);
 
       // Skip all possible spills.
-      if (auto *stub = dyn_cast<SpillInputSection>(isec))
+      if (isa<SpillInputSection>(isec))
         continue;
 
       const uint64_t pos = dot;
@@ -1158,6 +1158,7 @@ void LinkerScript::assignOffsets(OutputSection *sec) {
       isec->outSecOff = dot - sec->addr;
       dot += isec->getSize();
 
+#if 0
       // Try to spill instead of overflowing.
       if (config->enableNonContiguousRegions &&
           wouldOverflowMemoryRegions(dot - pos)) {
@@ -1188,6 +1189,7 @@ void LinkerScript::assignOffsets(OutputSection *sec) {
           continue;
         }
       }
+#endif
 
       // Update output section size after adding each section. This is so that
       // SIZEOF works correctly in the case below:
@@ -1195,10 +1197,12 @@ void LinkerScript::assignOffsets(OutputSection *sec) {
       expandOutputSection(dot - pos);
     }
 
+#if 0
     // Remove any spilled sections.
     if (!spills.empty())
       llvm::erase_if(sections,
                      [&](InputSection *isec) { return spills.contains(isec); });
+#endif
   }
 
   // If .relro_padding is present, round up the end to a common-page-size
@@ -1483,6 +1487,95 @@ const Defined *LinkerScript::assignAddresses() {
 
   state = nullptr;
   return getChangedSymbolAssignment(oldValues);
+}
+
+static size_t getMemoryRegionOverage(MemoryRegion *mr) {
+  if (!mr || mr->curPos - mr->getOrigin() < mr->getLength())
+    return 0;
+  return mr->curPos - mr->getOrigin() - mr->getLength();
+}
+
+// Spill input sections in reverse order of allocation to (potentially) bring
+// memory regions out of overflow. They may overflow in the next iteration, but
+// it should still converge.
+bool LinkerScript::spillSections() {
+  if (!config->enableNonContiguousRegions)
+    return false;
+
+  bool spilled = false;
+  for (SectionCommand *cmd : reverse(sectionCommands)) {
+    auto *od = dyn_cast<OutputDesc>(cmd);
+    if (!od)
+      continue;
+    OutputSection *sec = &od->osec;
+    if (!sec->size || !sec->memRegion)
+      continue;
+
+    size_t memOverage = getMemoryRegionOverage(sec->memRegion);
+    size_t lmaOverage = getMemoryRegionOverage(sec->lmaRegion);
+
+    if (!memOverage && !lmaOverage)
+      continue;
+
+    DenseSet<InputSection *> spills;
+    for (SectionCommand *cmd : reverse(sec->commands)) {
+      auto *is = dyn_cast<InputSectionDescription>(cmd);
+      if (!is)
+        continue;
+      for (InputSection *isec : reverse(is->sections)) {
+        // Skip all possible spills.
+        if (auto *stub = dyn_cast<SpillInputSection>(isec))
+          continue;
+
+        if (!isec->getSize())
+          continue;
+
+        // Find the next spill location.
+        auto it = spillLists.find(isec);
+        if (it == spillLists.end())
+          continue;
+
+        spilled = true;
+        SpillList &list = it->second;
+
+        SpillInputSection *spill = list.head;
+        if (!spill->next)
+          spillLists.erase(isec);
+        else
+          list.head = spill->next;
+
+        spills.insert(isec);
+
+        // Replace the next spill location with the spilled section and adjust
+        // its properties to match the new location.
+        *llvm::find(spill->cmd->sections, spill) = isec;
+        isec->parent = spill->parent;
+        // The alignment of the spill section may have diverged from the
+        // original, but correct assignment requires the spill's alignment,
+        // not the original.
+        isec->addralign = spill->addralign;
+
+        // Record the reduction in overage.
+        if (isec->getSize() > memOverage)
+          memOverage = 0;
+        else
+          memOverage -= isec->getSize();
+        if (isec->getSize() > lmaOverage)
+          lmaOverage = 0;
+        else
+          lmaOverage -= isec->getSize();
+        if (!memOverage && !lmaOverage)
+          break;
+      }
+      // Remove any spilled sections.
+      if (!spills.empty())
+        llvm::erase_if(is->sections, [&](InputSection *isec) {
+          return spills.contains(isec);
+        });
+    }
+  }
+
+  return spilled;
 }
 
 // Erase any potential spill sections that were not used.
