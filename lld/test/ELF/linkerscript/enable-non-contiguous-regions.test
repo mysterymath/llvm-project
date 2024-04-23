@@ -76,6 +76,13 @@ SPILL-MERGE: .first  PROGBITS 0000000000000000 000190 000000
 SPILL-MERGE: .second PROGBITS 0000000000000001 001001 000002
 SPILL-MERGE: .third  PROGBITS 0000000000000003 001003 000000
 
+# Check that an error is reported for INSERT
+
+RUN: not ld.lld -T %t/insert.ld %t/spill.o -o %t/insert.out --enable-non-contiguous-regions 2>&1 |\
+RUN:   FileCheck %s -check-prefix=INSERT
+
+INSERT: error: INSERT cannot be used with --enable-non-contiguous-regions
+
 #--- spill.s
 .section .one_byte_section,"a",@progbits
 .fill 1
@@ -181,3 +188,16 @@ SECTIONS {
   .second : { *(.a) } >b
   .third : { *(.b) } >c
 }
+
+#--- insert.ld
+MEMORY {
+  a : ORIGIN = 0, LENGTH = 1
+}
+
+SECTIONS {
+  .a : { *(.two_byte_section) } >a
+}
+
+SECTIONS {
+  .b : { *(.one_byte_section) } >a
+} INSERT AFTER .a;

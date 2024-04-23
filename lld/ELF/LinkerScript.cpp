@@ -328,6 +328,9 @@ getChangedSymbolAssignment(const SymbolAssignmentMap &oldValues) {
 void LinkerScript::processInsertCommands() {
   SmallVector<OutputDesc *, 0> moves;
   for (const InsertCommand &cmd : insertCommands) {
+    if (config->enableNonContiguousRegions)
+      error("INSERT cannot be used with --enable-non-contiguous-regions");
+
     for (StringRef name : cmd.names) {
       // If base is empty, it may have been discarded by
       // adjustOutputSections(). We do not handle such output sections.
