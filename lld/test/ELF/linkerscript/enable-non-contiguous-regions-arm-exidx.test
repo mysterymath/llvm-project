@@ -13,9 +13,9 @@ CHECK-NEXT: e4ffff01 01000000
 #--- test.ld
 MEMORY {
   exidx : ORIGIN = 0, LENGTH = 40
-  a : ORIGIN = 40, LENGTH = 8
-  b : ORIGIN = 48, LENGTH = 4
-  c : ORIGIN = 52, LENGTH = 4
+  a : ORIGIN = 40, LENGTH = 12
+  b : ORIGIN = 52, LENGTH = 4
+  c : ORIGIN = 56, LENGTH = 4
   d : ORIGIN = 0x3000000, LENGTH = 4
 }
 
