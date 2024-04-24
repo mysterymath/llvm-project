@@ -1158,51 +1158,11 @@ void LinkerScript::assignOffsets(OutputSection *sec) {
       isec->outSecOff = dot - sec->addr;
       dot += isec->getSize();
 
-#if 0
-      // Try to spill instead of overflowing.
-      if (config->enableNonContiguousRegions &&
-          wouldOverflowMemoryRegions(dot - pos)) {
-        // Find the next spill location.
-        if (auto it = spillLists.find(isec); it != spillLists.end()) {
-          SpillList &list = it->second;
-
-          SpillInputSection *spill = list.head;
-          if (!spill->next)
-            spillLists.erase(isec);
-          else
-            list.head = spill->next;
-
-          // Roll dot back to its position before the section was considered.
-          dot = pos;
-
-          spills.insert(isec);
-
-          // Replace the next spill location with the spilled section and adjust
-          // its properties to match the new location.
-          *llvm::find(spill->cmd->sections, spill) = isec;
-          isec->parent = spill->parent;
-          // The alignment of the spill section may have diverged from the
-          // original, but correct assignment requires the spill's alignment,
-          // not the original.
-          isec->addralign = spill->addralign;
-
-          continue;
-        }
-      }
-#endif
-
       // Update output section size after adding each section. This is so that
       // SIZEOF works correctly in the case below:
       // .foo { *(.aaa) a = SIZEOF(.foo); *(.bbb) }
       expandOutputSection(dot - pos);
     }
-
-#if 0
-    // Remove any spilled sections.
-    if (!spills.empty())
-      llvm::erase_if(sections,
-                     [&](InputSection *isec) { return spills.contains(isec); });
-#endif
   }
 
   // If .relro_padding is present, round up the end to a common-page-size
