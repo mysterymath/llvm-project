@@ -1703,7 +1703,8 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
   for (;;) {
     bool changed = target->needsThunks ? tc.createThunks(pass, outputSections)
                                        : target->relaxOnce(pass);
-    changed |= script->spillSections();
+    bool spilled = script->spillSections();
+    changed |= spilled;
     ++pass;
 
     // With Thunk Size much smaller than branch range we expect to
@@ -1749,6 +1750,11 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
                     " does not converge");
         break;
       }
+    } else if (spilled) {
+      // Spilling can change relative section order, so recompute anything that
+      // depends on it.
+      for (Partition &part : partitions)
+        finalizeSynthetic(part.armExidx.get());
     }
   }
   if (!config->relocatable && config->emachine == EM_RISCV)
