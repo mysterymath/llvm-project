@@ -1456,8 +1456,10 @@ static bool isRegionOverflowed(MemoryRegion *mr) {
 }
 
 // Spill input sections in reverse order of allocation to (potentially) bring
-// memory regions out of overflow. They may overflow in the next iteration, but
-// it should still converge.
+// memory regions out of overflow. This only approximates the minimum set of
+// spills needed to bring regions under size, as it may spill sections that
+// aren't strictly required to be spilled. It may also not spill enough, but
+// that can be corrected in the next pass.
 bool LinkerScript::spillSections() {
   if (!config->enableNonContiguousRegions)
     return false;

@@ -19,7 +19,7 @@ MEMORY {
 
 SECTIONS {
   .ARM.exidx : { *(.ARM.exidx) } >exidx
-  .first_chance : { *(.text) } >a
+  .first_chance : { *(.text .text.f2) } >a
   .text.f1 : { *(.text.f1) } >b
   .last_chance : { *(.text.f2) } >c
 }
