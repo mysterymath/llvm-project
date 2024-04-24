@@ -1449,10 +1449,10 @@ const Defined *LinkerScript::assignAddresses() {
   return getChangedSymbolAssignment(oldValues);
 }
 
-static size_t getMemoryRegionOverage(MemoryRegion *mr) {
-  if (!mr || mr->curPos - mr->getOrigin() < mr->getLength())
-    return 0;
-  return mr->curPos - mr->getOrigin() - mr->getLength();
+static bool isRegionOverflowed(MemoryRegion *mr) {
+  if (!mr)
+    return false;
+  return mr->curPos - mr->getOrigin() > mr->getLength();
 }
 
 // Spill input sections in reverse order of allocation to (potentially) bring
@@ -1471,14 +1471,12 @@ bool LinkerScript::spillSections() {
     if (!sec->size || !sec->memRegion)
       continue;
 
-    size_t memOverage = getMemoryRegionOverage(sec->memRegion);
-    size_t lmaOverage = getMemoryRegionOverage(sec->lmaRegion);
-
-    if (!memOverage && !lmaOverage)
-      continue;
-
     DenseSet<InputSection *> spills;
     for (SectionCommand *cmd : reverse(sec->commands)) {
+      if (!isRegionOverflowed(sec->memRegion) &&
+          !isRegionOverflowed(sec->lmaRegion))
+        break;
+
       auto *is = dyn_cast<InputSectionDescription>(cmd);
       if (!is)
         continue;
@@ -1516,15 +1514,11 @@ bool LinkerScript::spillSections() {
         isec->addralign = spill->addralign;
 
         // Record the reduction in overage.
-        if (isec->getSize() > memOverage)
-          memOverage = 0;
-        else
-          memOverage -= isec->getSize();
-        if (isec->getSize() > lmaOverage)
-          lmaOverage = 0;
-        else
-          lmaOverage -= isec->getSize();
-        if (!memOverage && !lmaOverage)
+        sec->memRegion->curPos -= isec->getSize();
+        if (sec->lmaRegion)
+          sec->lmaRegion->curPos -= isec->getSize();
+        if (!isRegionOverflowed(sec->memRegion) &&
+            !isRegionOverflowed(sec->lmaRegion))
           break;
       }
       // Remove any spilled sections.
