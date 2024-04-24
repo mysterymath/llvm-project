@@ -1,30 +1,27 @@
-# If a thunk causes additional spilling, and that reorders input sections, the
-# .ARM.exidx table must be rebuilt using the new order.
+# If a spilling reorders input sections, the .ARM.exidx table must be rebuilt
+# using the new order.
 
 RUN: split-file %s %t
 RUN: llvm-mc -filetype=obj -triple=armv7a-none-linux-gnueabi %t/test.s -o %t/test.o
 RUN: ld.lld -T %t/test.ld %t/test.o -o %t/test --enable-non-contiguous-regions
 RUN: llvm-readobj -x .ARM.exidx %t/test | FileCheck %s
 
-CHECK:      28000000 08849780 24000000 10849880
-CHECK-NEXT: 20000000 20849980 e8ffff01 40849a80
-CHECK-NEXT: e4ffff01 01000000
+CHECK:      20000000 08849780 1c000000 10849880
+CHECK-NEXT: 18000000 20849980 14000000 01000000
 
 #--- test.ld
 MEMORY {
-  exidx : ORIGIN = 0, LENGTH = 40
-  a : ORIGIN = 40, LENGTH = 12
-  b : ORIGIN = 52, LENGTH = 4
-  c : ORIGIN = 56, LENGTH = 4
-  d : ORIGIN = 0x3000000, LENGTH = 4
+  exidx : ORIGIN = 0, LENGTH = 32
+  a : ORIGIN = 32, LENGTH = 4
+  b : ORIGIN = 36, LENGTH = 4
+  c : ORIGIN = 40, LENGTH = 4
 }
 
 SECTIONS {
   .ARM.exidx : { *(.ARM.exidx) } >exidx
-  .first_chance : { *(.text .text.f2) } >a
+  .first_chance : { *(.text) } >a
   .text.f1 : { *(.text.f1) } >b
   .last_chance : { *(.text.f2) } >c
-  .text.f3 : { *(.text.f3) } >d
 }
 
 #--- test.s
@@ -33,7 +30,7 @@ SECTIONS {
  .globl _start
 _start:
  .fnstart
- bl f3
+ bx lr
  .save {r7, lr}
  .setfp r7, sp, #0
  .fnend
@@ -54,13 +51,4 @@ f2:
  bx lr
  .save {r9, lr}
  .setfp r9, sp, #0
- .fnend
-
- .section .text.f3, "ax", %progbits
- .globl f3
-f3:
- .fnstart
- bx lr
- .save {r10, lr}
- .setfp r10, sp, #0
  .fnend
