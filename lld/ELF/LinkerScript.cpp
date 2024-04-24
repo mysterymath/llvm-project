@@ -1455,11 +1455,11 @@ static bool isRegionOverflowed(MemoryRegion *mr) {
   return mr->curPos - mr->getOrigin() > mr->getLength();
 }
 
-// Spill input sections in reverse order of allocation to (potentially) bring
-// memory regions out of overflow. This only approximates the minimum set of
-// spills needed to bring regions under size, as it may spill sections that
-// aren't strictly required to be spilled. It may also not spill enough, but
-// that can be corrected in the next pass.
+// Spill input sections in reverse order of address assignment to (potentially)
+// bring memory regions out of overflow. The size savings of a spill can only be
+// estimated, since general linker script arithmetic may occur afterwards.
+// Under-estimates may cause unnecessary spills, but over-estimates can always
+// be corrected on the next pass.
 bool LinkerScript::spillSections() {
   if (!config->enableNonContiguousRegions)
     return false;
