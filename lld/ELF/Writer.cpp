@@ -1755,6 +1755,7 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
       // depends on it.
       for (Partition &part : partitions)
         finalizeSynthetic(part.armExidx.get());
+      resolveShfLinkOrder();
     }
   }
   if (!config->relocatable && config->emachine == EM_RISCV)
