@@ -9,9 +9,9 @@ RUN: llvm-mc -n -filetype=obj -triple=x86_64 %t/spill.s -o %t/spill.o
 RUN: ld.lld -T %t/spill.ld %t/spill.o -o %t/spill.out --enable-non-contiguous-regions
 RUN: llvm-readelf -S %t/spill.out | FileCheck %s -check-prefix=SPILL
 
-SPILL: Name          Type     Address          Off    Size
-SPILL: .first_chance PROGBITS 0000000000000000 001000 000001
-SPILL: .last_chance  PROGBITS 0000000000000002 001002 000002
+SPILL:      Name          Type     Address          Off    Size
+SPILL:      .first_chance PROGBITS 0000000000000000 001000 000001
+SPILL-NEXT: .last_chance  PROGBITS 0000000000000002 001002 000002
 
 # Check that a spill off the end still fails the link.
 
@@ -26,19 +26,19 @@ SPILL-FAIL: error: section '.last_chance' will not fit in region 'b': overflowed
 RUN: ld.lld -T %t/spill-lma.ld %t/spill.o -o %t/spill-lma.out --enable-non-contiguous-regions
 RUN: llvm-readelf -S %t/spill-lma.out | FileCheck %s -check-prefix=SPILL-LMA
 
-SPILL-LMA: Name          Type     Address          Off    Size
-SPILL-LMA: .first_chance PROGBITS 0000000000000000 001000 000001
-SPILL-LMA: .last_chance  PROGBITS 0000000000000003 001003 000002
+SPILL-LMA:      Name          Type     Address          Off    Size
+SPILL-LMA:      .first_chance PROGBITS 0000000000000000 001000 000001
+SPILL-LMA-NEXT: .last_chance  PROGBITS 0000000000000003 001003 000002
 
 # Check that a spill can occur to an additional match after the first.
 
 RUN: ld.lld -T %t/spill-later.ld %t/spill.o -o %t/spill-later.out --enable-non-contiguous-regions
 RUN: llvm-readelf -S %t/spill-later.out | FileCheck %s -check-prefix=SPILL-LATER
 
-SPILL-LATER: Name            Type     Address          Off    Size
-SPILL-LATER: .first_chance   PROGBITS 0000000000000000 001000 000001
-SPILL-LATER: .second_chance  PROGBITS 0000000000000002 001001 000000
-SPILL-LATER: .last_chance    PROGBITS 0000000000000003 001003 000002
+SPILL-LATER:      Name            Type     Address          Off    Size
+SPILL-LATER:      .first_chance   PROGBITS 0000000000000000 001000 000001
+SPILL-LATER-NEXT: .second_chance  PROGBITS 0000000000000002 001001 000000
+SPILL-LATER-NEXT: .last_chance    PROGBITS 0000000000000003 001003 000002
 
 # Check that an additional match in /DISCARD/ has no effect.
 
@@ -46,6 +46,15 @@ RUN: not ld.lld -T %t/no-spill-into-discard.ld %t/spill.o -o %t/no-spill-into-di
 RUN:   FileCheck %s -check-prefix=NO-SPILL-INTO-DISCARD
 
 NO-SPILL-INTO-DISCARD: error: section '.osec' will not fit in region 'a': overflowed by 1 bytes
+
+# Check that a later overflow can cause an earlier section to spill.
+
+RUN: ld.lld -T %t/spill-earlier.ld %t/spill.o -o %t/spill-earlier.out --enable-non-contiguous-regions
+RUN: llvm-readelf -S %t/spill-earlier.out | FileCheck %s -check-prefix=SPILL-EARLIER
+
+SPILL-EARLIER:      Name          Type     Address          Off    Size
+SPILL-EARLIER:      .first_chance PROGBITS 0000000000000000 001000 000002
+SPILL-EARLIER-NEXT: .last_chance  PROGBITS 0000000000000002 001002 000001
 
 # Check that an additional match after /DISCARD/ has no effect.
 
@@ -60,9 +69,9 @@ NO-SPILL-FROM-DISCARD-NOT: .osec
 RUN: ld.lld -T %t/spill-align.ld %t/spill.o -o %t/spill-align.out --enable-non-contiguous-regions
 RUN: llvm-readelf -S %t/spill-align.out | FileCheck %s -check-prefix=SPILL-ALIGN
 
-SPILL-ALIGN: Name          Type     Address          Off    Size
-SPILL-ALIGN: .first_chance PROGBITS 0000000000000000 000158 000000
-SPILL-ALIGN: .last_chance  PROGBITS 0000000000000008 001008 00000a
+SPILL-ALIGN:      Name          Type     Address          Off    Size
+SPILL-ALIGN:      .first_chance PROGBITS 0000000000000000 000158 000000
+SPILL-ALIGN-NEXT: .last_chance  PROGBITS 0000000000000008 001008 00000a
 
 # Check that SHF_MERGEd sections are spilled according to the matches of the
 # first merged input section (the one giving the resulting section its name).
@@ -71,10 +80,10 @@ RUN: llvm-mc -n -filetype=obj -triple=x86_64 %t/merge.s -o %t/merge.o
 RUN: ld.lld -T %t/spill-merge.ld %t/merge.o -o %t/spill-merge.out --enable-non-contiguous-regions
 RUN: llvm-readelf -S %t/spill-merge.out | FileCheck %s -check-prefix=SPILL-MERGE
 
-SPILL-MERGE: Name          Type     Address          Off    Size
-SPILL-MERGE: .first  PROGBITS 0000000000000000 000190 000000
-SPILL-MERGE: .second PROGBITS 0000000000000001 001001 000002
-SPILL-MERGE: .third  PROGBITS 0000000000000003 001003 000000
+SPILL-MERGE:      Name          Type     Address          Off    Size
+SPILL-MERGE:      .first  PROGBITS 0000000000000000 000190 000000
+SPILL-MERGE-NEXT: .second PROGBITS 0000000000000001 001001 000002
+SPILL-MERGE-NEXT: .third  PROGBITS 0000000000000003 001003 000000
 
 # Check that an error is reported for INSERT
 
@@ -136,6 +145,17 @@ SECTIONS {
   .first_chance : { *(.one_byte_section) *(.two_byte_section) } >a
   .second_chance : { *(.two_byte_section) } >b
   .last_chance : { *(.two_byte_section) } >c
+}
+
+#--- spill-earlier.ld
+MEMORY {
+  a : ORIGIN = 0, LENGTH = 2
+  b : ORIGIN = 2, LENGTH = 1
+}
+
+SECTIONS {
+  .first_chance : { *(.one_byte_section) *(.two_byte_section) } >a
+  .last_chance : { *(.one_byte_section) } >b
 }
 
 #--- no-spill-into-discard.ld
