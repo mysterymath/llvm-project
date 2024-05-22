@@ -2286,7 +2286,7 @@ void Sema::ActOnPopScope(SourceLocation Loc, Scope *S) {
     // Partial translation units that are created in incremental processing must
     // not clean up the IdResolver because PTUs should take into account the
     // declarations that came from previous PTUs.
-    if (!PP.isIncrementalProcessingEnabled())
+    if (!PP.isIncrementalProcessingEnabled() && !getLangOpts().IncrementalExtensions)
       IdResolver.RemoveDecl(D);
 
     // Warn on it if we are shadowing a declaration.
