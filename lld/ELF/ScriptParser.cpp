@@ -972,12 +972,13 @@ OutputDesc *ScriptParser::readOverlaySectionDescription() {
     uint64_t withoutFlags = 0;
     if (consume("INPUT_SECTION_FLAGS"))
       std::tie(withFlags, withoutFlags) = readInputSectionFlags();
-    if (peek() == "CLASS")
+    StringRef tok = next();
+    if (tok == "CLASS")
       osd->osec.commands.push_back(make<InputSectionDescription>(
-          StringRef{}, withFlags, withoutFlags, next()));
+          StringRef{}, withFlags, withoutFlags, readSectionClassName()));
     else
       osd->osec.commands.push_back(
-          readInputSectionRules(next(), withFlags, withoutFlags));
+          readInputSectionRules(tok, withFlags, withoutFlags));
   }
   osd->osec.phdrs = readOutputSectionPhdrs();
   return osd;
