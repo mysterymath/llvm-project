@@ -498,14 +498,9 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
   SmallVector<InputSectionBase *, 0> ret;
   DenseSet<InputSectionBase *> spills;
 
-  // Returns whether an input section was already assigned to an earlier input
-  // section description in this output section or section class.
-  const auto alreadyAssignedToOutCmd =
-      [&outCmd](InputSectionBase *sec) { return sec->parent == &outCmd; };
-
   // Returns whether an input section's flags match the input section
   // description's specifiers.
-  const auto flagsMatch = [cmd](InputSectionBase *sec) {
+  auto flagsMatch = [cmd](InputSectionBase *sec) {
     return (sec->flags & cmd->withFlags) == cmd->withFlags &&
            (sec->flags & cmd->withoutFlags) == 0;
   };
@@ -548,7 +543,7 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
           continue;
 
         if (!cmd->matchesFile(sec->file) || pat.excludesFile(sec->file) ||
-            alreadyAssignedToOutCmd(sec) || !flagsMatch(sec))
+            sec->parent == &outCmd || !flagsMatch(sec))
           continue;
 
         if (sec->parent) {
@@ -609,7 +604,7 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
 
     for (InputSectionDescription *isd : scd->sc.commands) {
       for (InputSectionBase *sec : isd->sectionBases) {
-        if (alreadyAssignedToOutCmd(sec) || !flagsMatch(sec))
+        if (sec->parent == &outCmd || !flagsMatch(sec))
           continue;
         bool isSpill = sec->parent && isa<OutputSection>(sec->parent);
         if (!sec->parent || (isSpill && outCmd.name == "/DISCARD/"))
