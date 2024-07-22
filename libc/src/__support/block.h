@@ -295,6 +295,10 @@ public:
   // this existing block.
   bool can_allocate(size_t alignment, size_t size) const;
 
+  // Return the minimum outer size of a hypothetical block that could perform
+  // the given allocation.
+  static size_t size_for_allocation(cpp::byte* block, size_t alignment, size_t size);
+
   // This is the return type for `allocate` which can split one block into up to
   // three blocks.
   struct BlockInfo {
