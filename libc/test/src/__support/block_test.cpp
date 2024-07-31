@@ -238,22 +238,7 @@ TEST_FOR_EACH_BLOCK_TYPE(CannotMakeSecondBlockLargerInSplit) {
   ASSERT_FALSE(result.has_value());
 }
 
-TEST_FOR_EACH_BLOCK_TYPE(CannotMakeZeroSizeFirstBlock) {
-  // This block doesn't support splitting with zero payload size, since the
-  // prev_ field of the next block is always available.
-  constexpr size_t kN = 1024;
-
-  alignas(BlockType::ALIGNMENT) array<byte, kN> bytes;
-  auto result = BlockType::init(bytes);
-  ASSERT_TRUE(result.has_value());
-  BlockType *block = *result;
-
-  result = block->split(0);
-  EXPECT_FALSE(result.has_value());
-}
-
 TEST_FOR_EACH_BLOCK_TYPE(CanMakeMinimalSizeFirstBlock) {
-  // This block does support splitting with minimal payload size.
   constexpr size_t kN = 1024;
   constexpr size_t minimal_size = sizeof(typename BlockType::offset_type);
 
@@ -262,7 +247,7 @@ TEST_FOR_EACH_BLOCK_TYPE(CanMakeMinimalSizeFirstBlock) {
   ASSERT_TRUE(result.has_value());
   BlockType *block = *result;
 
-  result = block->split(minimal_size);
+  result = block->split(0);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(block->inner_size(), minimal_size);
 }
@@ -301,7 +286,7 @@ TEST_FOR_EACH_BLOCK_TYPE(CanMarkBlockUsed) {
   EXPECT_FALSE(block->used());
 }
 
-TEST_FOR_EACH_BLOCK_TYPE(CannotSplitUsedBlock) {
+TEST_FOR_EACH_BLOCK_TYPE(CanSplitUsedBlock) {
   constexpr size_t kN = 1024;
   constexpr size_t kSplitN = 512;
 
@@ -312,7 +297,10 @@ TEST_FOR_EACH_BLOCK_TYPE(CannotSplitUsedBlock) {
 
   block->mark_used();
   result = block->split(kSplitN);
-  ASSERT_FALSE(result.has_value());
+  ASSERT_TRUE(result.has_value());
+  BlockType *new_block = *result;
+  EXPECT_TRUE(block->used());
+  EXPECT_FALSE(new_block->used());
 }
 
 TEST_FOR_EACH_BLOCK_TYPE(CanMergeWithNextBlock) {
@@ -362,7 +350,7 @@ TEST_FOR_EACH_BLOCK_TYPE(CannotMergeWithFirstOrLastBlock) {
   EXPECT_FALSE(block2->merge_next());
 }
 
-TEST_FOR_EACH_BLOCK_TYPE(CannotMergeUsedBlock) {
+TEST_FOR_EACH_BLOCK_TYPE(CanMergeUsedBlock) {
   constexpr size_t kN = 1024;
   constexpr size_t kSplitN = 512;
 
@@ -376,7 +364,8 @@ TEST_FOR_EACH_BLOCK_TYPE(CannotMergeUsedBlock) {
   ASSERT_TRUE(result.has_value());
 
   block->mark_used();
-  EXPECT_FALSE(block->merge_next());
+  EXPECT_TRUE(block->merge_next());
+  EXPECT_TRUE(block->used());
 }
 
 TEST_FOR_EACH_BLOCK_TYPE(CanGetBlockFromUsableSpace) {

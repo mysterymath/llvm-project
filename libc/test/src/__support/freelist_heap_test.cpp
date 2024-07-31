@@ -119,7 +119,7 @@ TEST_FOR_EACH_ALLOCATOR(ReturnedPointersAreAligned, 2048) {
   EXPECT_EQ(ptr2_start % alignment, static_cast<size_t>(0));
 }
 
-TEST_FOR_EACH_ALLOCATOR(CanRealloc, 2048) {
+TEST_FOR_EACH_ALLOCATOR(ReallocInPlace, 2048) {
   constexpr size_t ALLOC_SIZE = 512;
   constexpr size_t kNewAllocSize = 768;
 
@@ -127,25 +127,33 @@ TEST_FOR_EACH_ALLOCATOR(CanRealloc, 2048) {
   void *ptr2 = allocator.realloc(ptr1, kNewAllocSize);
 
   ASSERT_NE(ptr1, static_cast<void *>(nullptr));
-  ASSERT_NE(ptr2, static_cast<void *>(nullptr));
+  EXPECT_EQ(ptr1, ptr2);
+  auto *block = FreeListHeap<>::BlockType::from_usable_space(ptr2);
+  EXPECT_GT(block->inner_size(), ALLOC_SIZE);
+  EXPECT_FALSE(block->next()->used());
 }
 
-TEST_FOR_EACH_ALLOCATOR(ReallocHasSameContent, 2048) {
+TEST_FOR_EACH_ALLOCATOR(ReallocCopyContent, 2048) {
   constexpr size_t ALLOC_SIZE = sizeof(int);
-  constexpr size_t kNewAllocSize = sizeof(int) * 2;
+  constexpr size_t kNewAllocSize = sizeof(int) * 32;
   // Data inside the allocated block.
   cpp::byte data1[ALLOC_SIZE];
   // Data inside the reallocated block.
   cpp::byte data2[ALLOC_SIZE];
 
   int *ptr1 = reinterpret_cast<int *>(allocator.allocate(ALLOC_SIZE));
+  ASSERT_NE(ptr1, static_cast<int *>(nullptr));
   *ptr1 = 42;
   LIBC_NAMESPACE::memcpy(data1, ptr1, ALLOC_SIZE);
+
+  // Ensure a used block immediately follows the block to realloc.
+  allocator.allocate(1);
+
   int *ptr2 = reinterpret_cast<int *>(allocator.realloc(ptr1, kNewAllocSize));
+  ASSERT_NE(ptr2, static_cast<int *>(nullptr));
+  ASSERT_NE(ptr2, ptr1);
   LIBC_NAMESPACE::memcpy(data2, ptr2, ALLOC_SIZE);
 
-  ASSERT_NE(ptr1, static_cast<int *>(nullptr));
-  ASSERT_NE(ptr2, static_cast<int *>(nullptr));
   // Verify that data inside the allocated and reallocated chunks are the same.
   EXPECT_EQ(LIBC_NAMESPACE::memcmp(data1, data2, ALLOC_SIZE), 0);
 }
@@ -166,10 +174,13 @@ TEST_FOR_EACH_ALLOCATOR(ReallocSmallerSize, 2048) {
   constexpr size_t kNewAllocSize = 256;
 
   void *ptr1 = allocator.allocate(ALLOC_SIZE);
+  ASSERT_NE(ptr1, static_cast<void*>(nullptr));
   void *ptr2 = allocator.realloc(ptr1, kNewAllocSize);
 
-  // For smaller sizes, realloc will not shrink the block.
   EXPECT_EQ(ptr1, ptr2);
+  auto *block = FreeListHeap<>::BlockType::from_usable_space(ptr2);
+  EXPECT_LT(block->inner_size(), ALLOC_SIZE);
+  EXPECT_FALSE(block->next()->used());
 }
 
 TEST_FOR_EACH_ALLOCATOR(ReallocTooLarge, 2048) {

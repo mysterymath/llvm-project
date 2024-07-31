@@ -201,10 +201,10 @@ public:
 
   /// Attempts to split this block.
   ///
-  /// If successful, the block will have an inner size of `new_inner_size`,
-  /// rounded to ensure that the split point is on an ALIGNMENT boundary. The
-  /// remaining space will be returned as a new block. Note that the prev_ field
-  /// of the next block counts as part of the inner size of the returnd block.
+  /// If successful, the block will have an inner size of at least
+  /// `new_inner_size`. The remaining space will be returned as a new block.
+  /// Note that the prev_ field of the next block counts as part of the inner
+  /// size of the returned block.
   ///
   /// This method may fail if the remaining space is too small to hold a new
   /// block. If this method fails for any reason, the original block is
@@ -437,12 +437,9 @@ Block<OffsetType, kAlign>::allocate(Block *block, size_t alignment,
 template <typename OffsetType, size_t kAlign>
 optional<Block<OffsetType, kAlign> *>
 Block<OffsetType, kAlign>::split(size_t new_inner_size) {
-  if (used())
-    return {};
   // The prev_ field of the next block is always available, so there is a
   // minimum size to a block created through splitting.
-  if (new_inner_size < sizeof(prev_))
-    return {};
+  new_inner_size = cpp::max(new_inner_size, sizeof(prev_));
 
   size_t old_inner_size = inner_size();
   new_inner_size =
@@ -459,6 +456,7 @@ Block<OffsetType, kAlign>::split(size_t new_inner_size) {
 template <typename OffsetType, size_t kAlign>
 Block<OffsetType, kAlign> *
 Block<OffsetType, kAlign>::split_impl(size_t new_inner_size) {
+  bool is_used = used();
   size_t outer_size1 = outer_size(new_inner_size);
   LIBC_ASSERT(outer_size1 % ALIGNMENT == 0 && "new size must be aligned");
   ByteSpan new_region = region().subspan(outer_size1);
@@ -466,19 +464,26 @@ Block<OffsetType, kAlign>::split_impl(size_t new_inner_size) {
   next_ |= outer_size1;
 
   Block *new_block = as_block(new_region);
-  mark_free(); // Free status for this block is now stored in new_block.
+  if (is_used)
+    new_block->mark_free();
+  else
+    mark_free();
   new_block->next()->prev_ = new_region.size();
   return new_block;
 }
 
 template <typename OffsetType, size_t kAlign>
 bool Block<OffsetType, kAlign>::merge_next() {
-  if (used() || next()->used())
+  if (next()->used())
     return false;
+  bool is_used = used();
   size_t new_size = outer_size() + next()->outer_size();
   next_ &= ~SIZE_MASK;
   next_ |= new_size;
-  next()->prev_ = new_size;
+  if (is_used)
+    mark_used();
+  else
+    next()->prev_ = new_size;
   return true;
 }
 

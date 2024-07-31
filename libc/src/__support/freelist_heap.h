@@ -199,11 +199,39 @@ void *FreeListHeap<NUM_BUCKETS>::realloc(void *ptr, size_t size) {
     return nullptr;
   size_t old_size = chunk_block->inner_size();
 
-  // Do nothing and return ptr if the required memory size is smaller than
-  // the current size.
-  if (old_size >= size)
+  // The prev_ field of the next block is always available.
+  size = cpp::max(size, sizeof(typename BlockType::offset_type));
+
+  if (size == old_size)
     return ptr;
 
+  // Attempt to grow.
+  if (size > old_size) {
+    BlockType *next = chunk_block->next();
+    if (!next->used()) {
+      size_t grow = size - old_size;
+      size_t avail = next->outer_size();
+      if (grow <= avail) {
+        freelist_.remove_chunk(block_to_span(next));
+        chunk_block->merge_next();
+        old_size = chunk_block->inner_size();
+        // Handle free space via the realloc shrink logic below.
+      }
+    }
+  }
+
+  // Attempt to shrink.
+  if (size < old_size) {
+    optional<BlockType *> result = chunk_block->split(size);
+    if (!result)
+      return ptr;
+    BlockType *split = *result;
+    split->merge_next();
+    freelist_.add_chunk(block_to_span(split));
+    return ptr;
+  }
+
+  // Could not shrink or grow.
   void *new_ptr = allocate(size);
   // Don't invalidate ptr if allocate(size) fails to initilize the memory.
   if (new_ptr == nullptr)
