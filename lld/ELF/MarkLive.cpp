@@ -69,6 +69,9 @@ private:
   // There are normally few input sections whose names are valid C
   // identifiers, so we just store a SmallVector instead of a multimap.
   DenseMap<StringRef, SmallVector<InputSectionBase *, 0>> cNamedSections;
+
+  // The immediate parent keeping a given input section alive.
+  DenseMap<InputSection *, InputSection *> whyLive;
 };
 } // namespace
 
