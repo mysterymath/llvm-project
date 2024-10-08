@@ -22,7 +22,6 @@
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/DebugInfo/Symbolize/Markup.h"
 #include "llvm/DebugInfo/Symbolize/Symbolize.h"
-#include "llvm/Debuginfod/Debuginfod.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
