@@ -54,6 +54,107 @@ std::optional<SmallVector<StringRef>> DebuginfodUrls;
 llvm::sys::RWMutex UrlsMutex;
 } // namespace
 
+Expected<std::string>
+DebuginfodClient::fetchDebugInfo(ArrayRef<uint8_t> BuildID) const {
+  std::string UrlPath = getDebuginfodDebuginfoUrlPath(BuildID);
+  return fetchArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
+}
+
+Expected<std::string>
+DebuginfodClient::fetchSource(BuildIDRef ID, StringRef SourceFilePath) const {
+  std::string UrlPath = getDebuginfodSourceUrlPath(ID, SourceFilePath);
+  return fetchArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
+}
+
+Expected<std::string> DebuginfodClient::fetchExecutable(BuildIDRef ID) const {
+  std::string UrlPath = getDebuginfodExecutableUrlPath(ID);
+  return fetchArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
+}
+
+Expected<std::string> DebuginfodClient::fetchArtifact(StringRef UniqueKey,
+                                                      StringRef UrlPath) const {
+  SmallString<10> CacheDir;
+
+  Expected<std::string> CacheDirOrErr = getDefaultDebuginfodCacheDirectory();
+  if (!CacheDirOrErr)
+    return CacheDirOrErr.takeError();
+  CacheDir = *CacheDirOrErr;
+
+  return fetchArtifact(UniqueKey, UrlPath, CacheDir, getDefaultDebuginfodUrls(),
+                       getDefaultDebuginfodTimeout());
+}
+
+Expected<std::string>
+DebuginfodClient::fetchArtifact(StringRef UniqueKey, StringRef UrlPath,
+                                StringRef CacheDirectoryPath,
+                                ArrayRef<StringRef> DebuginfodUrls,
+                                std::chrono::milliseconds Timeout) const {
+  SmallString<64> AbsCachedArtifactPath;
+  sys::path::append(AbsCachedArtifactPath, CacheDirectoryPath,
+                    "llvmcache-" + UniqueKey);
+
+  Expected<FileCache> CacheOrErr =
+      localCache("Debuginfod-client", ".debuginfod-client", CacheDirectoryPath);
+  if (!CacheOrErr)
+    return CacheOrErr.takeError();
+
+  FileCache Cache = *CacheOrErr;
+  // We choose an arbitrary Task parameter as we do not make use of it.
+  unsigned Task = 0;
+  Expected<AddStreamFn> CacheAddStreamOrErr = Cache(Task, UniqueKey, "");
+  if (!CacheAddStreamOrErr)
+    return CacheAddStreamOrErr.takeError();
+  AddStreamFn &CacheAddStream = *CacheAddStreamOrErr;
+  if (!CacheAddStream)
+    return std::string(AbsCachedArtifactPath);
+  // The artifact was not found in the local cache, query the debuginfod
+  // servers.
+  if (!HTTPClient::isAvailable())
+    return createStringError(errc::io_error,
+                             "No working HTTP client is available.");
+
+  if (!HTTPClient::IsInitialized)
+    return createStringError(
+        errc::io_error,
+        "A working HTTP client is available, but it is not initialized. To "
+        "allow Debuginfod to make HTTP requests, call HTTPClient::initialize() "
+        "at the beginning of main.");
+
+  HTTPClient Client;
+  Client.setTimeout(Timeout);
+  for (StringRef ServerUrl : DebuginfodUrls) {
+    SmallString<64> ArtifactUrl;
+    sys::path::append(ArtifactUrl, sys::path::Style::posix, ServerUrl, UrlPath);
+
+    // Perform the HTTP request and if successful, write the response body to
+    // the cache.
+    {
+      StreamedHTTPResponseHandler Handler(
+          [&]() { return CacheAddStream(Task, ""); }, Client);
+      HTTPRequest Request(ArtifactUrl);
+      Request.Headers = getHeaders();
+      Error Err = Client.perform(Request, Handler);
+      if (Err)
+        return std::move(Err);
+
+      unsigned Code = Client.responseCode();
+      if (Code && Code != 200)
+        continue;
+    }
+
+    Expected<CachePruningPolicy> PruningPolicyOrErr =
+        parseCachePruningPolicy(std::getenv("DEBUGINFOD_CACHE_POLICY"));
+    if (!PruningPolicyOrErr)
+      return PruningPolicyOrErr.takeError();
+    pruneCache(CacheDirectoryPath, *PruningPolicyOrErr);
+
+    // Return the path to the artifact on disk.
+    return std::string(AbsCachedArtifactPath);
+  }
+
+  return createStringError(errc::argument_out_of_domain, "build id not found");
+}
+
 std::string getDebuginfodCacheKey(llvm::StringRef S) {
   return utostr(xxh3_64bits(S));
 }
@@ -129,12 +230,6 @@ std::string getDebuginfodSourceUrlPath(BuildIDRef ID,
   return std::string(UrlPath);
 }
 
-Expected<std::string> getCachedOrDownloadSource(BuildIDRef ID,
-                                                StringRef SourceFilePath) {
-  std::string UrlPath = getDebuginfodSourceUrlPath(ID, SourceFilePath);
-  return getCachedOrDownloadArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
-}
-
 std::string getDebuginfodExecutableUrlPath(BuildIDRef ID) {
   SmallString<64> UrlPath;
   sys::path::append(UrlPath, sys::path::Style::posix, "buildid",
@@ -142,36 +237,11 @@ std::string getDebuginfodExecutableUrlPath(BuildIDRef ID) {
   return std::string(UrlPath);
 }
 
-Expected<std::string> getCachedOrDownloadExecutable(BuildIDRef ID) {
-  std::string UrlPath = getDebuginfodExecutableUrlPath(ID);
-  return getCachedOrDownloadArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
-}
-
 std::string getDebuginfodDebuginfoUrlPath(BuildIDRef ID) {
   SmallString<64> UrlPath;
   sys::path::append(UrlPath, sys::path::Style::posix, "buildid",
                     buildIDToString(ID), "debuginfo");
   return std::string(UrlPath);
-}
-
-Expected<std::string> getCachedOrDownloadDebuginfo(BuildIDRef ID) {
-  std::string UrlPath = getDebuginfodDebuginfoUrlPath(ID);
-  return getCachedOrDownloadArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
-}
-
-// General fetching function.
-Expected<std::string> getCachedOrDownloadArtifact(StringRef UniqueKey,
-                                                  StringRef UrlPath) {
-  SmallString<10> CacheDir;
-
-  Expected<std::string> CacheDirOrErr = getDefaultDebuginfodCacheDirectory();
-  if (!CacheDirOrErr)
-    return CacheDirOrErr.takeError();
-  CacheDir = *CacheDirOrErr;
-
-  return getCachedOrDownloadArtifact(UniqueKey, UrlPath, CacheDir,
-                                     getDefaultDebuginfodUrls(),
-                                     getDefaultDebuginfodTimeout());
 }
 
 namespace {
@@ -246,75 +316,6 @@ static SmallVector<std::string, 0> getHeaders() {
     Headers.emplace_back(Line);
   }
   return Headers;
-}
-
-Expected<std::string> getCachedOrDownloadArtifact(
-    StringRef UniqueKey, StringRef UrlPath, StringRef CacheDirectoryPath,
-    ArrayRef<StringRef> DebuginfodUrls, std::chrono::milliseconds Timeout) {
-  SmallString<64> AbsCachedArtifactPath;
-  sys::path::append(AbsCachedArtifactPath, CacheDirectoryPath,
-                    "llvmcache-" + UniqueKey);
-
-  Expected<FileCache> CacheOrErr =
-      localCache("Debuginfod-client", ".debuginfod-client", CacheDirectoryPath);
-  if (!CacheOrErr)
-    return CacheOrErr.takeError();
-
-  FileCache Cache = *CacheOrErr;
-  // We choose an arbitrary Task parameter as we do not make use of it.
-  unsigned Task = 0;
-  Expected<AddStreamFn> CacheAddStreamOrErr = Cache(Task, UniqueKey, "");
-  if (!CacheAddStreamOrErr)
-    return CacheAddStreamOrErr.takeError();
-  AddStreamFn &CacheAddStream = *CacheAddStreamOrErr;
-  if (!CacheAddStream)
-    return std::string(AbsCachedArtifactPath);
-  // The artifact was not found in the local cache, query the debuginfod
-  // servers.
-  if (!HTTPClient::isAvailable())
-    return createStringError(errc::io_error,
-                             "No working HTTP client is available.");
-
-  if (!HTTPClient::IsInitialized)
-    return createStringError(
-        errc::io_error,
-        "A working HTTP client is available, but it is not initialized. To "
-        "allow Debuginfod to make HTTP requests, call HTTPClient::initialize() "
-        "at the beginning of main.");
-
-  HTTPClient Client;
-  Client.setTimeout(Timeout);
-  for (StringRef ServerUrl : DebuginfodUrls) {
-    SmallString<64> ArtifactUrl;
-    sys::path::append(ArtifactUrl, sys::path::Style::posix, ServerUrl, UrlPath);
-
-    // Perform the HTTP request and if successful, write the response body to
-    // the cache.
-    {
-      StreamedHTTPResponseHandler Handler(
-          [&]() { return CacheAddStream(Task, ""); }, Client);
-      HTTPRequest Request(ArtifactUrl);
-      Request.Headers = getHeaders();
-      Error Err = Client.perform(Request, Handler);
-      if (Err)
-        return std::move(Err);
-
-      unsigned Code = Client.responseCode();
-      if (Code && Code != 200)
-        continue;
-    }
-
-    Expected<CachePruningPolicy> PruningPolicyOrErr =
-        parseCachePruningPolicy(std::getenv("DEBUGINFOD_CACHE_POLICY"));
-    if (!PruningPolicyOrErr)
-      return PruningPolicyOrErr.takeError();
-    pruneCache(CacheDirectoryPath, *PruningPolicyOrErr);
-
-    // Return the path to the artifact on disk.
-    return std::string(AbsCachedArtifactPath);
-  }
-
-  return createStringError(errc::argument_out_of_domain, "build id not found");
 }
 
 DebuginfodLogEntry::DebuginfodLogEntry(const Twine &Message)
@@ -552,7 +553,7 @@ Expected<std::string> DebuginfodCollection::findDebugBinaryPath(BuildIDRef ID) {
     return *Path;
 
   // Try federation.
-  return getCachedOrDownloadDebuginfo(ID);
+  return Client.fetchDebugInfo(ID);
 }
 
 DebuginfodServer::DebuginfodServer(DebuginfodLog &Log,

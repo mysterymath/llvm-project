@@ -8,12 +8,7 @@
 ///
 /// \file
 /// This file contains several declarations for the debuginfod client and
-/// server. The client functions are getDefaultDebuginfodUrls,
-/// getCachedOrDownloadArtifact, and several convenience functions for specific
-/// artifact types: getCachedOrDownloadSource, getCachedOrDownloadExecutable,
-/// and getCachedOrDownloadDebuginfo. For the server, this file declares the
-/// DebuginfodLogEntry and DebuginfodServer structs, as well as the
-/// DebuginfodLog, DebuginfodCollection classes.
+/// server.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -37,6 +32,37 @@
 #include <queue>
 
 namespace llvm {
+
+// A thread-safe client for debuginfod requests. Reusing the same client
+// improves performance, since TCP connections can be reused.
+class DebuginfodClient {
+public:
+  /// Fetches a debug binary by searching the default local cache directory and
+  /// server URLs.
+  Expected<std::string> fetchDebugInfo(object::BuildIDRef BuildID) const;
+
+  /// Fetches a specified source file by searching the default local cache
+  /// directory and server URLs.
+  Expected<std::string> fetchSource(object::BuildIDRef ID,
+                                    StringRef SourceFilePath) const;
+
+  /// Fetches an executable by searching the default local cache directory and
+  /// server URLs.
+  Expected<std::string> fetchExecutable(object::BuildIDRef ID) const;
+
+  /// Fetches any debuginfod artifact using the default local cache directory
+  /// and server URLs.
+  Expected<std::string> fetchArtifact(StringRef UniqueKey,
+                                      StringRef UrlPath) const;
+
+  /// Fetches any debuginfod artifact using the specified local cache directory,
+  /// server URLs, and request timeout (in milliseconds). If the artifact is
+  /// found, uses the UniqueKey for the local cache file.
+  Expected<std::string> fetchArtifact(StringRef UniqueKey, StringRef UrlPath,
+                                      StringRef CacheDirectoryPath,
+                                      ArrayRef<StringRef> DebuginfodUrls,
+                                      std::chrono::milliseconds Timeout) const;
+};
 
 /// Returns false if a debuginfod lookup can be determined to have no chance of
 /// succeeding.
@@ -66,36 +92,11 @@ std::chrono::milliseconds getDefaultDebuginfodTimeout();
 std::string getDebuginfodSourceUrlPath(object::BuildIDRef ID,
                                        StringRef SourceFilePath);
 
-/// Fetches a specified source file by searching the default local cache
-/// directory and server URLs.
-Expected<std::string> getCachedOrDownloadSource(object::BuildIDRef ID,
-                                                StringRef SourceFilePath);
-
 /// Get the full URL path for an executable request of a given BuildID.
 std::string getDebuginfodExecutableUrlPath(object::BuildIDRef ID);
 
-/// Fetches an executable by searching the default local cache directory and
-/// server URLs.
-Expected<std::string> getCachedOrDownloadExecutable(object::BuildIDRef ID);
-
 /// Get the full URL path for a debug binary request of a given BuildID.
 std::string getDebuginfodDebuginfoUrlPath(object::BuildIDRef ID);
-
-/// Fetches a debug binary by searching the default local cache directory and
-/// server URLs.
-Expected<std::string> getCachedOrDownloadDebuginfo(object::BuildIDRef ID);
-
-/// Fetches any debuginfod artifact using the default local cache directory and
-/// server URLs.
-Expected<std::string> getCachedOrDownloadArtifact(StringRef UniqueKey,
-                                                  StringRef UrlPath);
-
-/// Fetches any debuginfod artifact using the specified local cache directory,
-/// server URLs, and request timeout (in milliseconds). If the artifact is
-/// found, uses the UniqueKey for the local cache file.
-Expected<std::string> getCachedOrDownloadArtifact(
-    StringRef UniqueKey, StringRef UrlPath, StringRef CacheDirectoryPath,
-    ArrayRef<StringRef> DebuginfodUrls, std::chrono::milliseconds Timeout);
 
 class ThreadPoolInterface;
 
@@ -142,6 +143,8 @@ class DebuginfodCollection {
   // Minimum update interval, in seconds, for on-demand updates triggered when a
   // build-id is not found.
   double MinInterval;
+
+  DebuginfodClient Client;
 
 public:
   DebuginfodCollection(ArrayRef<StringRef> Paths, DebuginfodLog &Log,

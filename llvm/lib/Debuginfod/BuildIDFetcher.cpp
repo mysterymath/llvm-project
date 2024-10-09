@@ -14,8 +14,6 @@
 
 #include "llvm/Debuginfod/BuildIDFetcher.h"
 
-#include "llvm/Debuginfod/Debuginfod.h"
-
 using namespace llvm;
 
 std::optional<std::string>
@@ -23,7 +21,7 @@ DebuginfodFetcher::fetch(ArrayRef<uint8_t> BuildID) const {
   if (std::optional<std::string> Path = BuildIDFetcher::fetch(BuildID))
     return std::move(*Path);
 
-  Expected<std::string> PathOrErr = getCachedOrDownloadDebuginfo(BuildID);
+  Expected<std::string> PathOrErr = Client.fetchDebugInfo(BuildID);
   if (PathOrErr)
     return *PathOrErr;
   consumeError(PathOrErr.takeError());

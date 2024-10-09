@@ -36,7 +36,7 @@ BuildID parseBuildID(StringRef Str);
 BuildIDRef getBuildID(const ObjectFile *Obj);
 
 /// BuildIDFetcher searches local cache directories for debug info. Derived
-/// classes search more locations. Thread safe.
+/// classes search more locations. Thread-safe.
 class BuildIDFetcher {
 public:
   BuildIDFetcher(std::vector<std::string> DebugFileDirectories)
