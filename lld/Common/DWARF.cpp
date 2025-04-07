@@ -90,14 +90,9 @@ DWARFCache::getVariableLoc(StringRef name) {
 // using DWARF debug info.
 std::optional<DILineInfo> DWARFCache::getDILineInfo(uint64_t offset,
                                                     uint64_t sectionIndex) {
-  DILineInfo info;
-  for (const llvm::DWARFDebugLine::LineTable *lt : lineTables) {
-    if (lt->getFileLineInfoForAddress(
-            {offset, sectionIndex}, false, nullptr,
-            DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath, info))
-      return info;
-  }
-  return std::nullopt;
+  return dwarf->getLineInfoForAddress(
+      {offset, sectionIndex},
+      {DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath});
 }
 
 } // namespace lld
