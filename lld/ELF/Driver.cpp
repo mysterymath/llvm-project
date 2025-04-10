@@ -2629,7 +2629,7 @@ void LinkerDriver::compileBitcodeFiles(bool skipLinkedOutput) {
       markBuffersAsDontNeed(ctx, skipLinkedOutput);
 
     ltoObjectFiles = lto->compile();
-    compiledCount = ctx.bitcodeFiles.size();
+    compiledCount += bitcodeFiles.size();
     for (auto &file : ltoObjectFiles) {
       auto *obj = cast<ObjFile<ELFT>>(file.get());
       obj->parse(/*ignoreComdats=*/true);
