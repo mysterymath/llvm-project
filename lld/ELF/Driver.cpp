@@ -2615,12 +2615,14 @@ static void markBuffersAsDontNeed(Ctx &ctx, bool skipLinkedOutput) {
 template <class ELFT>
 void LinkerDriver::compileBitcodeFiles(bool skipLinkedOutput) {
   llvm::TimeTraceScope timeScope("LTO");
-
-
   for (unsigned compiledCount = 0; compiledCount < ctx.bitcodeFiles.size();) {
+    bool isLibcall = compiledCount != 0;
     // Compile bitcode files and replace bitcode symbols.
-    lto.reset(new BitcodeCompiler(ctx, /*isLibcall=*/compiledCount != 0));
-    for (BitcodeFile *file : ctx.bitcodeFiles)
+    lto.reset(new BitcodeCompiler(ctx, isLibcall));
+    ArrayRef bitcodeFiles = ctx.bitcodeFiles;
+    if (isLibcall)
+      bitcodeFiles = bitcodeFiles.drop_front(compiledCount).take_front(1);
+    for (BitcodeFile *file : bitcodeFiles)
       lto->add(*file);
 
     if (!ctx.bitcodeFiles.empty())

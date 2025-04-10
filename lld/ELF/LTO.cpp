@@ -171,7 +171,7 @@ static lto::Config createConfig(Ctx &ctx) {
   return c;
 }
 
-BitcodeCompiler::BitcodeCompiler(Ctx &ctx) : ctx(ctx) {
+BitcodeCompiler::BitcodeCompiler(Ctx &ctx, bool isLibcall) : ctx(ctx), isLibcall(isLibcall) {
   // Initialize indexFile.
   if (!ctx.arg.thinLTOIndexOnlyArg.empty())
     indexFile = openFile(ctx.arg.thinLTOIndexOnlyArg);

@@ -38,7 +38,7 @@ class InputFile;
 
 class BitcodeCompiler {
 public:
-  BitcodeCompiler(Ctx &ctx);
+  BitcodeCompiler(Ctx &ctx, bool isLibcall);
   ~BitcodeCompiler();
 
   void add(BitcodeFile &f);
@@ -46,6 +46,7 @@ public:
 
 private:
   Ctx &ctx;
+  bool isLibcall;
   std::unique_ptr<llvm::lto::LTO> ltoObj;
   // An array of (module name, native relocatable file content) pairs.
   SmallVector<std::pair<std::string, SmallString<0>>, 0> buf;
