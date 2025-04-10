@@ -48,7 +48,7 @@ static std::string getThinLTOOutputFile(Ctx &ctx, StringRef modulePath) {
                                    ctx.arg.thinLTOPrefixReplaceNew);
 }
 
-static lto::Config createConfig(Ctx &ctx) {
+static lto::Config createConfig(Ctx &ctx, bool isLibcall) {
   lto::Config c;
 
   // LLD supports the new relocations and address-significance tables.
@@ -95,7 +95,7 @@ static lto::Config createConfig(Ctx &ctx) {
 
   if (auto relocModel = getRelocModelFromCMModel())
     c.RelocModel = *relocModel;
-  else if (ctx.arg.relocatable)
+  else if (ctx.arg.relocatable || isLibcall)
     c.RelocModel = std::nullopt;
   else if (ctx.arg.isPic)
     c.RelocModel = Reloc::PIC_;
@@ -197,7 +197,7 @@ BitcodeCompiler::BitcodeCompiler(Ctx &ctx, bool isLibcall) : ctx(ctx), isLibcall
     {llvm::lto::LTO::LTOKind::LTOK_UnifiedThin,
      llvm::lto::LTO::LTOKind::LTOK_UnifiedRegular,
      llvm::lto::LTO::LTOKind::LTOK_Default};
-  ltoObj = std::make_unique<lto::LTO>(createConfig(ctx), backend,
+  ltoObj = std::make_unique<lto::LTO>(createConfig(ctx, isLibcall), backend,
                                       ctx.arg.ltoPartitions,
                                       ltoModes[ctx.arg.ltoKind]);
 
@@ -218,7 +218,7 @@ BitcodeCompiler::~BitcodeCompiler() = default;
 
 void BitcodeCompiler::add(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
-  bool isExec = !ctx.arg.shared && !ctx.arg.relocatable;
+  bool isExec = !ctx.arg.shared && !ctx.arg.relocatable && !isLibcall;
 
   if (ctx.arg.thinLTOEmitIndexFiles)
     thinIndices.insert(obj.getName());
@@ -248,10 +248,10 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // 4) Symbols that are defined in bitcode files and used for dynamic
     //    linking.
     // 5) Symbols that will be referenced after linker wrapping is performed.
-    r.VisibleToRegularObj = ctx.arg.relocatable || sym->isUsedInRegularObj ||
-                            sym->referencedAfterWrap ||
-                            (r.Prevailing && sym->isExported) ||
-                            usedStartStop.count(objSym.getSectionName());
+    r.VisibleToRegularObj =
+        ctx.arg.relocatable || isLibcall || sym->isUsedInRegularObj ||
+        sym->referencedAfterWrap || (r.Prevailing && sym->isExported) ||
+        usedStartStop.count(objSym.getSectionName());
     // Identify symbols exported dynamically, and that therefore could be
     // referenced by a shared library not visible to the linker.
     r.ExportDynamic = sym->computeBinding(ctx) != STB_LOCAL &&
