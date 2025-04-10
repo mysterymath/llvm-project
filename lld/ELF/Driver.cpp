@@ -2636,7 +2636,7 @@ void LinkerDriver::compileBitcodeFiles(bool skipLinkedOutput) {
 
       // For defined symbols in non-relocatable output,
       // compute isExported and parse '@'.
-      if (!ctx.arg.relocatable)
+      if (!ctx.arg.relocatable && !isLibcall)
         for (Symbol *sym : obj->getGlobalSymbols()) {
           if (!sym->isDefined())
             continue;
