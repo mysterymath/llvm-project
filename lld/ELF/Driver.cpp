@@ -2295,15 +2295,6 @@ static void handleUndefinedGlob(Ctx &ctx, StringRef arg) {
     handleUndefined(ctx, sym, "--undefined-glob");
 }
 
-static void handleLibcall(Ctx &ctx, StringRef name) {
-  Symbol *sym = ctx.symtab->find(name);
-  if (sym && sym->isLazy() && isa<BitcodeFile>(sym->file)) {
-    if (!ctx.arg.whyExtract.empty())
-      ctx.whyExtractRecords.emplace_back("<libcall>", sym->file, *sym);
-    sym->extract(ctx);
-  }
-}
-
 static void writeArchiveStats(Ctx &ctx) {
   if (ctx.arg.printArchiveStats.empty())
     return;
@@ -3027,29 +3018,6 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
     sym->isUsedInRegularObj = true;
   if (Symbol *sym = dyn_cast_or_null<Defined>(ctx.symtab->find(ctx.arg.fini)))
     sym->isUsedInRegularObj = true;
-
-  // If any of our inputs are bitcode files, the LTO code generator may create
-  // references to certain library functions that might not be explicit in the
-  // bitcode file's symbol table. If any of those library functions are defined
-  // in a bitcode file in an archive member, we need to arrange to use LTO to
-  // compile those archive members by adding them to the link beforehand.
-  //
-  // However, adding all libcall symbols to the link can have undesired
-  // consequences. For example, the libgcc implementation of
-  // __sync_val_compare_and_swap_8 on 32-bit ARM pulls in an .init_array entry
-  // that aborts the program if the Linux kernel does not support 64-bit
-  // atomics, which would prevent the program from running even if it does not
-  // use 64-bit atomics.
-  //
-  // Therefore, we only add libcall symbols to the link before LTO if we have
-  // to, i.e. if the symbol's definition is in bitcode. Any other required
-  // libcall symbols will be added to the link after LTO when we add the LTO
-  // object file to the link.
-  if (!ctx.bitcodeFiles.empty()) {
-    llvm::Triple TT(ctx.bitcodeFiles.front()->obj->getTargetTriple());
-    for (auto *s : lto::LTO::getRuntimeLibcallSymbols(TT))
-      handleLibcall(ctx, s);
-  }
 
   // Archive members defining __wrap symbols may be extracted.
   std::vector<WrappedSymbol> wrapped = addWrappedSymbols(ctx, args);
