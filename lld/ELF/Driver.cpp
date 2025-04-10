@@ -2615,31 +2615,36 @@ static void markBuffersAsDontNeed(Ctx &ctx, bool skipLinkedOutput) {
 template <class ELFT>
 void LinkerDriver::compileBitcodeFiles(bool skipLinkedOutput) {
   llvm::TimeTraceScope timeScope("LTO");
-  // Compile bitcode files and replace bitcode symbols.
-  lto.reset(new BitcodeCompiler(ctx));
-  for (BitcodeFile *file : ctx.bitcodeFiles)
-    lto->add(*file);
 
-  if (!ctx.bitcodeFiles.empty())
-    markBuffersAsDontNeed(ctx, skipLinkedOutput);
 
-  ltoObjectFiles = lto->compile();
-  for (auto &file : ltoObjectFiles) {
-    auto *obj = cast<ObjFile<ELFT>>(file.get());
-    obj->parse(/*ignoreComdats=*/true);
+  for (unsigned compiledCount = 0; compiledCount < ctx.bitcodeFiles.size();) {
+    // Compile bitcode files and replace bitcode symbols.
+    lto.reset(new BitcodeCompiler(ctx, /*isLibcall=*/compiledCount != 0));
+    for (BitcodeFile *file : ctx.bitcodeFiles)
+      lto->add(*file);
 
-    // For defined symbols in non-relocatable output,
-    // compute isExported and parse '@'.
-    if (!ctx.arg.relocatable)
-      for (Symbol *sym : obj->getGlobalSymbols()) {
-        if (!sym->isDefined())
-          continue;
-        if (ctx.arg.exportDynamic && sym->computeBinding(ctx) != STB_LOCAL)
-          sym->isExported = true;
-        if (sym->hasVersionSuffix)
-          sym->parseSymbolVersion(ctx);
-      }
-    ctx.objectFiles.push_back(obj);
+    if (!ctx.bitcodeFiles.empty())
+      markBuffersAsDontNeed(ctx, skipLinkedOutput);
+
+    ltoObjectFiles = lto->compile();
+    compiledCount = ctx.bitcodeFiles.size();
+    for (auto &file : ltoObjectFiles) {
+      auto *obj = cast<ObjFile<ELFT>>(file.get());
+      obj->parse(/*ignoreComdats=*/true);
+
+      // For defined symbols in non-relocatable output,
+      // compute isExported and parse '@'.
+      if (!ctx.arg.relocatable)
+        for (Symbol *sym : obj->getGlobalSymbols()) {
+          if (!sym->isDefined())
+            continue;
+          if (ctx.arg.exportDynamic && sym->computeBinding(ctx) != STB_LOCAL)
+            sym->isExported = true;
+          if (sym->hasVersionSuffix)
+            sym->parseSymbolVersion(ctx);
+        }
+      ctx.objectFiles.push_back(obj);
+    }
   }
 }
 
