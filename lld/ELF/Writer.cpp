@@ -14,6 +14,11 @@
 #include "Config.h"
 #include "InputFiles.h"
 #include "LinkerScript.h"
+#include "DWARF.h"
+#include "llvm/DebugInfo/DWARF/DWARFContext.h"
+#include "llvm/DebugInfo/DWARF/DWARFDebugLine.h"
+#include "llvm/ProfileData/SampleProfReader.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "MapFile.h"
 #include "OutputSections.h"
 #include "Relocations.h"
@@ -42,9 +47,9 @@ using namespace llvm;
 using namespace llvm::ELF;
 using namespace llvm::object;
 using namespace llvm::support;
-using namespace llvm::support::endian;
 using namespace lld;
 using namespace lld::elf;
+using llvm::support::endian::write64le;
 
 namespace {
 // The writer writes a SymbolTable result to a file.
@@ -1492,6 +1497,126 @@ static void randomizeSectionPadding(Ctx &ctx) {
   }
 }
 
+template <class ELFT>
+static void parseIRPGOProfile(Ctx &ctx) {
+  assert(!ctx.irpgoProfileMapping);
+  ctx.irpgoProfileMapping.emplace();
+  StringRef profilePath = ctx.arg.irpgoProfilePath;
+  if (profilePath.empty()) {
+    warn("spill-coldest-first enabled but irpgo-profile is empty");
+    return;
+  }
+
+  LLVMContext llvmCtx;
+  auto readerOrErr = sampleprof::SampleProfileReader::create(
+      profilePath, llvmCtx, *vfs::getRealFileSystem());
+  if (!readerOrErr) {
+    warn("failed to read profile " + profilePath + ": " + readerOrErr.getError().message());
+    return;
+  }
+  auto reader = std::move(readerOrErr.get());
+  if (std::error_code ec = reader->read()) {
+    warn("failed to read profile " + profilePath + ": " + ec.message());
+    return;
+  }
+  
+  auto &profiles = reader->getProfiles();
+
+  for (ELFFileBase *file : ctx.objectFiles) {
+    auto *obj = dyn_cast<ObjFile<ELFT>>(file);
+    if (!obj)
+      continue;
+    
+    DWARFContext dwarf(std::make_unique<LLDDwarfObj<ELFT>>(obj));
+    struct ProfiledRange {
+      DWARFDie die;
+      const sampleprof::FunctionSamples *samples;
+      uint64_t lowPC;
+      uint64_t highPC;
+    };
+    DenseMap<uint32_t, SmallVector<ProfiledRange, 2>> secToSubprograms;
+
+    for (const std::unique_ptr<DWARFUnit> &cu : dwarf.compile_units()) {
+      if (Error e = cu->tryExtractDIEsIfNeeded(false)) {
+        consumeError(std::move(e));
+        continue;
+      }
+      for (const DWARFDebugInfoEntry &entry : cu->dies()) {
+        DWARFDie die(cu.get(), &entry);
+        if (die.getTag() != dwarf::DW_TAG_subprogram)
+          continue;
+        const char *name = die.getName(DINameKind::LinkageName);
+        if (!name)
+          continue;
+        auto profIt = profiles.find(sampleprof::FunctionId(name));
+        if (profIt == profiles.end())
+          continue;
+        if (auto rangesOrErr = die.getAddressRanges())
+          for (const DWARFAddressRange &r : *rangesOrErr)
+            if (r.SectionIndex != object::SectionedAddress::UndefSection)
+              secToSubprograms[r.SectionIndex].push_back(
+                  {die, &profIt->second, r.LowPC, r.HighPC});
+      }
+    }
+    
+    for (auto [secIdx, sec] : llvm::enumerate(obj->getSections())) {
+      if (!sec || sec == &InputSection::discarded || !sec->isLive())
+        continue;
+      if (!(sec->flags & SHF_EXECINSTR))
+        continue;
+      auto *isec = dyn_cast<InputSection>(sec);
+      if (!isec)
+        continue;
+      
+      uint64_t count = 0;
+      bool foundProfile = false;
+      
+      auto it = secToSubprograms.find(secIdx);
+      if (it != secToSubprograms.end()) {
+        foundProfile = true;
+        for (const ProfiledRange &range : it->second) {
+          uint64_t startLine = range.die.getDeclLine();
+          DWARFUnit *targetCU = range.die.getDwarfUnit();
+
+          const DWARFDebugLine::LineTable *lt =
+                  dwarf.getLineTableForUnit(targetCU);
+          if (!lt)
+            continue;
+          std::vector<uint32_t> rowIndices;
+          uint64_t rangeSize = range.highPC - range.lowPC;
+          if (!lt->lookupAddressRange({range.lowPC, secIdx}, rangeSize,
+                                     rowIndices))
+            continue;
+          for (uint32_t rowIdx : rowIndices) {
+            const DWARFDebugLine::Row &row = lt->Rows[rowIdx];
+            if (row.Line >= startLine) {
+              uint32_t lineOffset = row.Line - startLine;
+              if (auto samplesOrErr = range.samples->findSamplesAt(
+                      lineOffset, row.Discriminator))
+                count += *samplesOrErr;
+            }
+          }
+        }
+      }
+
+      if (!foundProfile) {
+        // Fallback to symbol table.
+        Defined *sym = isec->getEnclosingFunction(0);
+        if (sym) {
+          auto profIt = profiles.find(sampleprof::FunctionId(sym->getName()));
+          if (profIt != profiles.end()) {
+            count = profIt->second.getTotalSamples();
+            foundProfile = true;
+          }
+        }
+      }
+      
+      if (foundProfile)
+        (*ctx.irpgoProfileMapping)[isec] = count;
+    }
+  }
+}
+
 // We need to generate and finalize the content that depends on the address of
 // InputSections. As the generation of the content may also alter InputSection
 // addresses we must converge to a fixed point. We do that here. See the comment
@@ -1500,6 +1625,10 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
   llvm::TimeTraceScope timeScope("Finalize address dependent content");
   AArch64Err843419Patcher a64p(ctx);
   ARMErr657417Patcher a32p(ctx);
+
+  if (ctx.arg.spillColdestFirst && !ctx.irpgoProfileMapping)
+    parseIRPGOProfile<ELFT>(ctx);
+
   ctx.script->assignAddresses();
 
   // .ARM.exidx and SHF_LINK_ORDER do not require precise addresses, but they

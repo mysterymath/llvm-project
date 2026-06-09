@@ -147,6 +147,9 @@ def : FF<"no-call-graph-profile-sort">, Alias<call_graph_profile_sort>, AliasArg
 
 defm irpgo_profile: EEq<"irpgo-profile",
   "Read a temporary profile file for use with --bp-startup-sort=">;
+defm spill_coldest_first: B<"spill-coldest-first",
+  "Enable spilling coldest sections first using profile (requires --irpgo-profile)",
+  "Disable spilling coldest sections first using profile (default)">;
 def bp_compression_sort: JJ<"bp-compression-sort=">, MetaVarName<"[none,function,data,both]">,
   HelpText<"Improve Lempel-Ziv compression by grouping similar sections together. Deprecated. Please use --bp-compression-sort-section">;
 def bp_compression_sort_section: JJ<"bp-compression-sort-section=">,

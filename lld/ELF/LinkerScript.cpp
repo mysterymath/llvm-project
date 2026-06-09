@@ -1635,7 +1635,19 @@ bool LinkerScript::spillSections() {
       auto *isd = dyn_cast<InputSectionDescription>(cmd);
       if (!isd)
         continue;
-      for (InputSection *isec : reverse(isd->sections)) {
+      SmallVector<InputSection *, 0> sections(isd->sections.begin(),
+                                              isd->sections.end());
+      if (ctx.arg.spillColdestFirst && ctx.irpgoProfileMapping) {
+        std::stable_sort(sections.begin(), sections.end(),
+                         [&](InputSection *a, InputSection *b) {
+                           uint64_t countA = ctx.irpgoProfileMapping->lookup(a);
+                           uint64_t countB = ctx.irpgoProfileMapping->lookup(b);
+                           return countA < countB;
+                         });
+      } else {
+        std::reverse(sections.begin(), sections.end());
+      }
+      for (InputSection *isec : sections) {
         // Potential spill locations cannot be spilled.
         if (isa<PotentialSpillSection>(isec))
           continue;
