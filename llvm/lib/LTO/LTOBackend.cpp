@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/LTO/LTOBackend.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
@@ -45,6 +46,12 @@
 #include "llvm/Transforms/IPO/WholeProgramDevirt.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include <optional>
 
 using namespace llvm;
@@ -513,10 +520,315 @@ static void codegen(const Config &Conf, TargetMachine *TM,
     report_fatal_error(std::move(Err));
 }
 
+namespace {
+class PostCodeGenSplitter {
+  const Config &C;
+  TargetMachine *TM;
+  AddStreamFn AddStream;
+  Module &Mod;
+  const std::vector<std::string> &TranslationUnits;
+  unsigned Parallelism;
+
+  struct Partition {
+    std::unique_ptr<TargetMachine> TM;
+    std::unique_ptr<MachineModuleInfo> MMI;
+    std::unique_ptr<Module> Module;
+  };
+  std::vector<Partition> Partitions;
+
+  bool isOwnedByModule(const User *U, const Module *M) {
+    if (auto *I = dyn_cast<Instruction>(U))
+      return I->getModule() == M;
+    if (auto *GVUser = dyn_cast<GlobalValue>(U))
+      return GVUser->getParent() == M;
+    if (auto *C = dyn_cast<Constant>(U)) {
+      for (const User *LU : C->users()) {
+        if (isOwnedByModule(LU, M))
+          return true;
+      }
+    }
+    return false;
+  }
+
+  unsigned getPartID(const GlobalValue &GV) {
+    StringRef TUName;
+    if (auto *F = dyn_cast<Function>(&GV)) {
+      if (F->hasFnAttribute("lto.tu"))
+        TUName = F->getFnAttribute("lto.tu").getValueAsString();
+    } else if (auto *GVVar = dyn_cast<GlobalVariable>(&GV)) {
+      if (GVVar->hasAttribute("lto.tu"))
+        TUName = GVVar->getAttribute("lto.tu").getValueAsString();
+    }
+    if (!TUName.empty()) {
+      auto It = llvm::find(TranslationUnits, TUName);
+      if (It != TranslationUnits.end()) {
+        return std::distance(TranslationUnits.begin(), It) + 1;
+      }
+    }
+    return 0; // Orphan goes to partition 0 (ld-temp.o)
+  }
+
+  GlobalValue *getOrCreateLocalDecl(Module &PartMod, GlobalValue *GV) {
+    if (GV->getParent() == &PartMod)
+      return GV;
+
+    GlobalValue *LocalDecl = PartMod.getNamedValue(GV->getName());
+    if (LocalDecl)
+      return LocalDecl;
+
+    if (auto *F = dyn_cast<Function>(GV)) {
+      Function *NewF = Function::Create(F->getFunctionType(), F->getLinkage(),
+                                        F->getAddressSpace(), F->getName(), &PartMod);
+      NewF->copyAttributesFrom(F);
+      LocalDecl = NewF;
+    } else if (auto *Var = dyn_cast<GlobalVariable>(GV)) {
+      GlobalVariable *NewVar = new GlobalVariable(
+          PartMod, Var->getValueType(), Var->isConstant(), Var->getLinkage(),
+          nullptr, Var->getName(), nullptr, Var->getThreadLocalMode(),
+          Var->getAddressSpace(), Var->isExternallyInitialized());
+      NewVar->copyAttributesFrom(Var);
+      LocalDecl = NewVar;
+    } else if (auto *Alias = dyn_cast<GlobalAlias>(GV)) {
+      PointerType *PT = Alias->getType();
+      Type *ValTy = Alias->getValueType();
+      GlobalValue *NewVal;
+      if (ValTy->isFunctionTy()) {
+        NewVal = Function::Create(cast<FunctionType>(ValTy), Alias->getLinkage(),
+                                  PT->getAddressSpace(), Alias->getName(), &PartMod);
+      } else {
+        NewVal = new GlobalVariable(
+            PartMod, ValTy, /*isConstant=*/false, Alias->getLinkage(),
+            nullptr, Alias->getName(), nullptr, Alias->getThreadLocalMode(),
+            PT->getAddressSpace());
+      }
+      LocalDecl = NewVal;
+    } else if (auto *IFunc = dyn_cast<GlobalIFunc>(GV)) {
+      Type *ValTy = IFunc->getValueType();
+      LocalDecl = Function::Create(cast<FunctionType>(ValTy), IFunc->getLinkage(),
+                              IFunc->getType()->getAddressSpace(), IFunc->getName(), &PartMod);
+    } else {
+      report_fatal_error("Unsupported GlobalValue type for cross-partition reference");
+    }
+
+    // Reseat all IR uses of the original GV inside PartMod to point to LocalDecl!
+    SmallVector<Use *, 8> UsesToReplace;
+    for (Use &U : GV->uses()) {
+      if (isOwnedByModule(U.getUser(), &PartMod)) {
+        UsesToReplace.push_back(&U);
+      }
+    }
+    for (Use *U : UsesToReplace) {
+      U->set(LocalDecl);
+    }
+
+    return LocalDecl;
+  }
+
+public:
+  PostCodeGenSplitter(const Config &C, TargetMachine *TM, AddStreamFn AddStream,
+                      Module &Mod, const std::vector<std::string> &TranslationUnits)
+      : C(C), TM(TM), AddStream(AddStream), Mod(Mod),
+        TranslationUnits(TranslationUnits), Parallelism(TranslationUnits.size() + 1),
+        Partitions(Parallelism) {}
+
+  void run() {
+    // 1. Externalize local symbols before codegen to avoid local-to-global promotion issues later.
+    auto externalize = [](GlobalValue *GV) {
+      if (GV->hasLocalLinkage()) {
+        GV->setLinkage(GlobalValue::ExternalLinkage);
+        GV->setVisibility(GlobalValue::HiddenVisibility);
+      }
+      if (!GV->hasName())
+        GV->setName("__llvmsplit_unnamed");
+    };
+
+    for (Function &F : Mod)
+      if (!F.isDeclaration()) externalize(&F);
+    for (GlobalVariable &GV : Mod.globals())
+      if (!GV.isDeclaration()) externalize(&GV);
+    for (GlobalAlias &GA : Mod.aliases())
+      externalize(&GA);
+    for (GlobalIFunc &GIF : Mod.ifuncs())
+      externalize(&GIF);
+
+    // 2. Run CodeGen on the unified module.
+    legacy::PassManager CodeGenPM;
+    auto *MMIWP = new MachineModuleInfoWrapperPass(TM);
+    if (!TM->addPassesToGenerateCode(CodeGenPM, /*DisableVerify=*/true, *MMIWP)) {
+      report_fatal_error("Failed to setup codegen passes");
+    }
+    CodeGenPM.run(Mod);
+
+    MachineModuleInfo &MMI = MMIWP->getMMI();
+
+    // 3. Set up Partitions.
+    const Target *T = &TM->getTarget();
+
+    for (unsigned i = 0; i < Parallelism; ++i) {
+      Partitions[i].Module = std::make_unique<Module>(
+          i == 0 ? "ld-temp.o" : TranslationUnits[i - 1], Mod.getContext());
+      Partitions[i].Module->setDataLayout(Mod.getDataLayout());
+      Partitions[i].Module->setTargetTriple(Mod.getTargetTriple());
+
+      if (!Mod.getModuleInlineAsm().empty()) {
+        Partitions[i].Module->setModuleInlineAsm(Mod.getModuleInlineAsm());
+      }
+
+      for (NamedMDNode &NMD : Mod.named_metadata()) {
+        if (NMD.getName() == "lto.tus")
+          continue;
+        NamedMDNode *NewNMD = Partitions[i].Module->getOrInsertNamedMetadata(NMD.getName());
+        for (MDNode *Op : NMD.operands())
+          NewNMD->addOperand(Op);
+      }
+
+      Partitions[i].TM = createTargetMachine(C, T, *Partitions[i].Module);
+      Partitions[i].MMI = std::make_unique<MachineModuleInfo>(Partitions[i].TM.get());
+    }
+
+    // 4. Move Functions and MachineFunctions to their partitions.
+    SmallVector<Function *, 64> FunctionsToMove;
+    for (Function &F : Mod) {
+      if (!F.isDeclaration()) {
+        FunctionsToMove.push_back(&F);
+      }
+    }
+
+    for (Function *F : FunctionsToMove) {
+      unsigned PartID = getPartID(*F);
+
+      std::unique_ptr<MachineFunction> MF = MMI.removeMachineFunction(*F);
+      if (!MF) {
+        continue;
+      }
+
+      F->removeFromParent();
+      Partitions[PartID].Module->getFunctionList().push_back(F);
+      Partitions[PartID].MMI->insertFunction(*F, std::move(MF));
+    }
+
+    // Move GlobalVariables to their partitions
+    SmallVector<GlobalVariable *, 64> GlobalsToMove;
+    for (GlobalVariable &GV : Mod.globals()) {
+      if (!GV.isDeclaration()) {
+        GlobalsToMove.push_back(&GV);
+      }
+    }
+    for (GlobalVariable *GV : GlobalsToMove) {
+      unsigned PartID = getPartID(*GV);
+      GV->removeFromParent();
+      Partitions[PartID].Module->insertGlobalVariable(GV);
+    }
+
+    // Move Aliases to their partitions
+    SmallVector<GlobalAlias *, 16> AliasesToMove;
+    for (GlobalAlias &GA : Mod.aliases()) {
+      AliasesToMove.push_back(&GA);
+    }
+    for (GlobalAlias *GA : AliasesToMove) {
+      unsigned PartID = getPartID(*GA);
+      GA->removeFromParent();
+      Partitions[PartID].Module->insertAlias(GA);
+    }
+
+    // Move IFuncs to their partitions
+    SmallVector<GlobalIFunc *, 8> IFuncsToMove;
+    for (GlobalIFunc &GIF : Mod.ifuncs()) {
+      IFuncsToMove.push_back(&GIF);
+    }
+    for (GlobalIFunc *GIF : IFuncsToMove) {
+      unsigned PartID = getPartID(*GIF);
+      GIF->removeFromParent();
+      Partitions[PartID].Module->insertIFunc(GIF);
+    }
+
+    // 5. Fix up Cross-Partition References.
+    for (unsigned i = 0; i < Parallelism; ++i) {
+      Module &PartMod = *Partitions[i].Module;
+      MachineModuleInfo &PartMMI = *Partitions[i].MMI;
+
+      for (Function &F : PartMod) {
+        MachineFunction *MF = PartMMI.getMachineFunction(F);
+        if (!MF) continue;
+
+        for (MachineBasicBlock &MBB : *MF) {
+          for (MachineInstr &MI : MBB) {
+            for (MachineOperand &MO : MI.operands()) {
+              if (MO.isGlobal()) {
+                GlobalValue *GV = const_cast<GlobalValue *>(MO.getGlobal());
+                if (GV->getParent() != &PartMod) {
+                  GlobalValue *LocalDecl = getOrCreateLocalDecl(PartMod, GV);
+                  MO.ChangeToGA(LocalDecl, MO.getOffset(), MO.getTargetFlags());
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 6. Run Emission (AsmPrinter) sequentially on the single thread.
+    for (unsigned i = 0; i < Parallelism; ++i) {
+      Partition &Part = Partitions[i];
+      if (Part.Module->empty())
+        continue;
+
+      Expected<std::unique_ptr<CachedFileStream>> StreamOrErr =
+          AddStream(i, Part.Module->getModuleIdentifier());
+      if (!StreamOrErr)
+        report_fatal_error(Twine(toString(StreamOrErr.takeError())));
+      std::unique_ptr<CachedFileStream> &Stream = *StreamOrErr;
+
+      legacy::PassManager EmitPM;
+      auto *PartitionMMIWP = new MachineModuleInfoWrapperPass(Part.TM.get());
+      
+      MachineModuleInfo &NewMMI = PartitionMMIWP->getMMI();
+      for (Function &F : *Part.Module) {
+        if (std::unique_ptr<MachineFunction> MF = Part.MMI->removeMachineFunction(F)) {
+          NewMMI.insertFunction(F, std::move(MF));
+        }
+      }
+
+      EmitPM.add(PartitionMMIWP);
+
+      if (Part.TM->addAsmPrinter(EmitPM, *Stream->OS, nullptr, C.CGFileType,
+                                 NewMMI.getContext())) {
+        report_fatal_error("Failed to setup AsmPrinter pass");
+      }
+      EmitPM.add(createFreeMachineFunctionPass());
+
+      EmitPM.run(*Part.Module);
+
+      if (Error Err = Stream->commit())
+        report_fatal_error(std::move(Err));
+    }
+  }
+};
+} // namespace
+
 static void splitCodeGen(const Config &C, TargetMachine *TM,
                          AddStreamFn AddStream,
                          unsigned ParallelCodeGenParallelismLevel, Module &Mod,
                          const ModuleSummaryIndex &CombinedIndex) {
+  std::vector<std::string> TranslationUnits;
+  if (NamedMDNode *TUsMD = Mod.getNamedMetadata("lto.tus")) {
+    for (MDNode *Op : TUsMD->operands()) {
+      if (Op->getNumOperands() == 1) {
+        if (auto *S = dyn_cast<MDString>(Op->getOperand(0))) {
+          TranslationUnits.push_back(S->getString().str());
+        }
+      }
+    }
+  }
+
+  // If we are splitting TUs, run our new post-codegen splitting and return early!
+  if (!TranslationUnits.empty()) {
+    PostCodeGenSplitter Splitter(C, TM, AddStream, Mod, TranslationUnits);
+    Splitter.run();
+    return;
+  }
+
+  // Fallback to default parallel codegen
   DefaultThreadPool CodegenThreadPool(
       heavyweight_hardware_concurrency(ParallelCodeGenParallelismLevel));
   unsigned ThreadCount = 0;

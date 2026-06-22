@@ -622,14 +622,13 @@ void llvm::thinLTOInternalizeAndPromoteInIndex(
 InputFile::~InputFile() = default;
 
 Expected<std::unique_ptr<InputFile>>
-InputFile::create(MemoryBufferRef Object, bool IncludeLocalSymbols) {
+InputFile::create(MemoryBufferRef Object) {
   std::unique_ptr<InputFile> File(new InputFile);
 
   Expected<IRSymtabFile> FOrErr = readIRSymtab(Object);
   if (!FOrErr)
     return FOrErr.takeError();
 
-  File->IncludeLocalSymbols = IncludeLocalSymbols;
   File->TargetTriple = FOrErr->TheReader.getTargetTriple();
   File->SourceFileName = FOrErr->TheReader.getSourceFileName();
   File->COFFLinkerOpts = FOrErr->TheReader.getCOFFLinkerOpts();
@@ -644,13 +643,8 @@ InputFile::create(MemoryBufferRef Object, bool IncludeLocalSymbols) {
          FOrErr->TheReader.module_symbols(I)) {
       // Skip symbols that are irrelevant to LTO. Note that this condition needs
       // to match the one in Skip() in LTO::addRegularLTO().
-      if (IncludeLocalSymbols) {
-        if (!Sym.isFormatSpecific() || Sym.isPrivate())
-          File->Symbols.push_back(Sym);
-      } else {
-        if (Sym.isGlobal() && !Sym.isFormatSpecific())
-          File->Symbols.push_back(Sym);
-      }
+      if (Sym.isGlobal() && !Sym.isFormatSpecific())
+        File->Symbols.push_back(Sym);
     }
     File->ModuleSymIndices.push_back({Begin, File->Symbols.size()});
   }
@@ -974,6 +968,19 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
   if (!MOrErr)
     return MOrErr.takeError();
   Module &M = **MOrErr;
+  if (Conf.LTOSplitTUs) {
+    RegularLTO.TranslationUnits.push_back(std::to_string(RegularLTO.TranslationUnits.size()));
+    StringRef TUName = RegularLTO.TranslationUnits.back();
+    for (GlobalObject &GO : M.global_objects()) {
+      if (!GO.isDeclaration()) {
+        if (auto *F = dyn_cast<Function>(&GO)) {
+          F->addFnAttr("lto.tu", TUName);
+        } else if (auto *GV = dyn_cast<GlobalVariable>(&GO)) {
+          GV->addAttribute("lto.tu", TUName);
+        }
+      }
+    }
+  }
   Mod.M = std::move(*MOrErr);
 
   if (Error Err = M.materializeMetadata())
@@ -1033,15 +1040,9 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
   auto Skip = [&]() {
     while (MsymI != MsymE) {
       auto Flags = SymTab.getSymbolFlags(*MsymI);
-      if (Input.IncludeLocalSymbols) {
-        if (!(Flags & object::BasicSymbolRef::SF_FormatSpecific) ||
-            (Flags & object::BasicSymbolRef::SF_Private))
-          return;
-      } else {
-        if ((Flags & object::BasicSymbolRef::SF_Global) &&
-            !(Flags & object::BasicSymbolRef::SF_FormatSpecific))
-          return;
-      }
+      if ((Flags & object::BasicSymbolRef::SF_Global) &&
+          !(Flags & object::BasicSymbolRef::SF_FormatSpecific))
+        return;
       ++MsymI;
     }
   };
@@ -1094,31 +1095,6 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
         if (GV->hasDLLImportStorageClass())
           GV->setDLLStorageClass(GlobalValue::DLLStorageClassTypes::
                                  DefaultStorageClass);
-      }
-
-      // Set the output section based on the linker script.
-      if (!R.OutputSectionName.empty()) {
-        if (auto *GVar = dyn_cast<GlobalVariable>(GV)) {
-          // First, remove the old attribute if present
-          if (GVar->hasAttribute("linker_output_section")) {
-            AttrBuilder Attrs(GVar->getParent()->getContext(),
-                              GVar->getAttributes());
-            Attrs.removeAttribute("linker_output_section");
-            GVar->setAttributes(AttributeSet::get(GVar->getContext(), Attrs));
-          }
-          GVar->addAttribute("linker_output_section", R.OutputSectionName);
-          if (GVar->hasSection())
-            GVar->setSection(
-                (GVar->getSection() + "^^" + M.getModuleIdentifier()).str());
-        } else if (auto *F = dyn_cast<Function>(GV)) {
-          // First, remove the old attribute if present
-          if (F->hasFnAttribute("linker_output_section"))
-            F->removeFnAttr("linker_output_section");
-          F->addFnAttr("linker_output_section", R.OutputSectionName);
-          if (F->hasSection())
-            F->setSection(
-                (F->getSection() + "^^" + M.getModuleIdentifier()).str());
-        }
       }
     } else if (auto *AS =
                    dyn_cast_if_present<ModuleSymbolTable::AsmSymbol *>(Msym)) {
@@ -1290,7 +1266,19 @@ unsigned LTO::getMaxTasks() const {
   CalledGetMaxTasks = true;
   auto ModuleCount = ThinLTO.ModulesToCompile ? ThinLTO.ModulesToCompile->size()
                                               : ThinLTO.ModuleMap.size();
-  return RegularLTO.ParallelCodeGenParallelismLevel + ModuleCount;
+  unsigned RegModuleCount = Conf.LTOSplitTUs ? RegularLTO.TranslationUnits.size() + 1
+                                             : RegularLTO.ParallelCodeGenParallelismLevel;
+  return RegModuleCount + ModuleCount;
+}
+
+LTO::TaskKind LTO::getTaskKind(unsigned TaskID) const {
+  unsigned RegParallelism = Conf.LTOSplitTUs ? RegularLTO.TranslationUnits.size() + 1
+                                             : RegularLTO.ParallelCodeGenParallelismLevel;
+  if (TaskID >= RegParallelism)
+    return TK_ThinLTO;
+  if (Conf.LTOSplitTUs && TaskID > 0)
+    return TK_SplitTU;
+  return TK_RegularLTO;
 }
 
 // If only some of the modules were split, we cannot correctly handle
@@ -1520,8 +1508,17 @@ Error LTO::runRegularLTO(AddStreamFn AddStream) {
   }
 
   if (!RegularLTO.EmptyCombinedModule || Conf.AlwaysEmitRegularLTOObj) {
+    if (Conf.LTOSplitTUs) {
+      NamedMDNode *TUsMD = RegularLTO.CombinedModule->getOrInsertNamedMetadata("lto.tus");
+      for (StringRef TUName : RegularLTO.TranslationUnits) {
+        TUsMD->addOperand(MDNode::get(RegularLTO.CombinedModule->getContext(),
+                                      MDString::get(RegularLTO.CombinedModule->getContext(), TUName)));
+      }
+    }
+    unsigned Parallelism = Conf.LTOSplitTUs ? RegularLTO.TranslationUnits.size() + 1
+                                            : RegularLTO.ParallelCodeGenParallelismLevel;
     if (Error Err = backend(
-            Conf, AddStream, RegularLTO.ParallelCodeGenParallelismLevel,
+            Conf, AddStream, Parallelism,
             *RegularLTO.CombinedModule, ThinLTO.CombinedIndex, BitcodeLibFuncs))
       return Err;
   }
@@ -2251,18 +2248,20 @@ Error LTO::runThinLTO(AddStreamFn AddStream, FileCache Cache,
       ThinLTO.ModulesToCompile ? *ThinLTO.ModulesToCompile : ThinLTO.ModuleMap;
 
   auto RunBackends = [&](ThinBackendProc *BackendProcess) -> Error {
+    unsigned RegParallelism = Conf.LTOSplitTUs ? RegularLTO.TranslationUnits.size() + 1
+                                               : RegularLTO.ParallelCodeGenParallelismLevel;
     auto ProcessOneModule = [&](int I) -> Error {
       auto &Mod = *(ModuleMap.begin() + I);
-      // Tasks 0 through ParallelCodeGenParallelismLevel-1 are reserved for
+      // Tasks 0 through RegParallelism-1 are reserved for
       // combined module and parallel code generation partitions.
       return BackendProcess->start(
-          RegularLTO.ParallelCodeGenParallelismLevel + I, Mod.second,
+          RegParallelism + I, Mod.second,
           ImportLists[Mod.first], ExportLists[Mod.first],
           ResolvedODR[Mod.first], ThinLTO.ModuleMap);
     };
 
     BackendProcess->setup(ModuleMap.size(),
-                          RegularLTO.ParallelCodeGenParallelismLevel,
+                          RegParallelism,
                           RegularLTO.CombinedModule->getTargetTriple());
 
     if (BackendProcess->getThreadCount() == 1 ||

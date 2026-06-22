@@ -425,14 +425,16 @@ bool InputSectionDescription::matchesFile(const InputFile &file) const {
   if (filePat.isTrivialMatchAll())
     return true;
 
-  if (!matchesFileCache || matchesFileCache->first != &file) {
+  const InputFile *fileToMatch = file.originalFile ? file.originalFile : &file;
+
+  if (!matchesFileCache || matchesFileCache->first != fileToMatch) {
     if (matchType == MatchType::WholeArchive) {
-      matchesFileCache.emplace(&file, filePat.match(file.archiveName));
+      matchesFileCache.emplace(fileToMatch, filePat.match(fileToMatch->archiveName));
     } else {
-      if (matchType == MatchType::ArchivesExcluded && !file.archiveName.empty())
-        matchesFileCache.emplace(&file, false);
+      if (matchType == MatchType::ArchivesExcluded && !fileToMatch->archiveName.empty())
+        matchesFileCache.emplace(fileToMatch, false);
       else
-        matchesFileCache.emplace(&file, filePat.match(file.getNameForScript()));
+        matchesFileCache.emplace(fileToMatch, filePat.match(fileToMatch->getNameForScript()));
     }
   }
 
@@ -443,9 +445,11 @@ bool SectionPattern::excludesFile(const InputFile &file) const {
   if (excludedFilePat.empty())
     return false;
 
-  if (!excludesFileCache || excludesFileCache->first != &file)
-    excludesFileCache.emplace(&file,
-                              excludedFilePat.match(file.getNameForScript()));
+  const InputFile *fileToMatch = file.originalFile ? file.originalFile : &file;
+
+  if (!excludesFileCache || excludesFileCache->first != fileToMatch)
+    excludesFileCache.emplace(fileToMatch,
+                              excludedFilePat.match(fileToMatch->getNameForScript()));
 
   return excludesFileCache->second;
 }
@@ -564,6 +568,7 @@ StringRef LinkerScript::mapLTOSectionName(StringRef inputSection,
   return "";
 }
 
+
 // Compute and remember which sections the InputSectionDescription matches.
 SmallVector<InputSectionBase *, 0>
 LinkerScript::computeInputSections(const InputSectionDescription *cmd,
@@ -616,22 +621,11 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
             cast<InputSection>(sec)->getRelocatedSection())
           continue;
 
-        StringRef sectionName = sec->name;
-        const InputFile *sectionFile = sec->file;
-        if (ctx.arg.ltoLinkerScripts) {
-          auto splitSectionName = sec->name.split("^^");
-          if (StringRef filename = splitSectionName.second; !filename.empty()) {
-            if (const InputFile *file = ltoInputFileMapping.lookup(filename)) {
-              sectionName = splitSectionName.first;
-              sectionFile = file;
-            }
-          }
-        }
         // Check the name early to improve performance in the common case.
-        if (!pat.sectionPat.match(sectionName))
+        if (!pat.sectionPat.match(sec->name))
           continue;
 
-        if (!cmd->matchesFile(*sectionFile) || pat.excludesFile(*sectionFile) ||
+        if (!cmd->matchesFile(*sec->file) || pat.excludesFile(*sec->file) ||
             !flagsMatch(sec))
           continue;
 

@@ -144,6 +144,7 @@ static lto::Config createConfig(Ctx &ctx) {
       ctx.arg.ltoValidateAllVtablesHaveTypeInfos;
   c.AllVtablesHaveTypeInfos = ctx.ltoAllVtablesHaveTypeInfos;
   c.AlwaysEmitRegularLTOObj = !ctx.arg.ltoObjPath.empty();
+  c.LTOSplitTUs = ctx.arg.ltoLinkerScripts;
   c.KeepSymbolNameCopies = false;
 
   for (const llvm::StringRef &name : ctx.arg.thinLTOModulesToCompile)
@@ -244,8 +245,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
 
   ArrayRef<Symbol *> syms = f.getSymbols();
   ArrayRef<lto::InputFile::Symbol> objSyms = obj.symbols();
-  if (ctx.arg.ltoLinkerScripts && ctx.script)
-    ctx.script->ltoInputFileMapping[obj.getName()] = &f;
+
   std::vector<lto::SymbolResolution> resols(syms.size());
 
   // Provide a resolution to the LTO API for each symbol.
@@ -419,30 +419,42 @@ SmallVector<std::unique_ptr<InputFile>, 0> BitcodeCompiler::compile() {
     // If the input bitcode file is path/to/x.o and -o specifies a.out, the
     // corresponding native relocatable file path will look like:
     // path/to/a.out.lto.x.o.
+    lto::LTO::TaskKind kind = ltoObj->getTaskKind(i);
     StringRef ltoObjName;
-    if (bitcodeFilePath == "ld-temp.o") {
+    if (kind == lto::LTO::TK_RegularLTO) {
       ltoObjName =
           ctx.saver.save(Twine(ctx.arg.outputFile) + ".lto" +
                          (i == 0 ? Twine("") : Twine('.') + Twine(i)) + ext);
     } else {
-      StringRef directory = sys::path::parent_path(bitcodeFilePath);
+      assert(i - 1 < ctx.bitcodeFiles.size() && "Task index out of bounds of bitcodeFiles");
+      StringRef originalPath = ctx.bitcodeFiles[i - 1]->getName();
+      StringRef directory = sys::path::parent_path(originalPath);
       // For an archive member, which has an identifier like "d/a.a(coll.o at
       // 8)" (see BitcodeFile::BitcodeFile), use the filename; otherwise, use
       // the stem (d/a.o => a).
-      StringRef baseName = bitcodeFilePath.ends_with(")")
-                               ? sys::path::filename(bitcodeFilePath)
-                               : sys::path::stem(bitcodeFilePath);
+      StringRef baseName = originalPath.ends_with(")")
+                               ? sys::path::filename(originalPath)
+                               : sys::path::stem(originalPath);
       StringRef outputFileBaseName = sys::path::filename(ctx.arg.outputFile);
+
+      StringRef suffix = (kind == lto::LTO::TK_SplitTU) ? ".reg" : "";
+
       SmallString<256> path;
       sys::path::append(path, directory,
-                        outputFileBaseName + ".lto." + baseName + ext);
+                        outputFileBaseName + ".lto." + baseName + suffix + ext);
       sys::path::remove_dots(path, true);
       ltoObjName = ctx.saver.save(path.str());
     }
     if (savePrelink || ctx.arg.ltoEmitAsm)
       saveBuffer(buf[i].second, ltoObjName);
-    if (!ctx.arg.ltoEmitAsm)
-      ret.push_back(createObjFile(ctx, MemoryBufferRef(objBuf, ltoObjName)));
+    if (!ctx.arg.ltoEmitAsm) {
+      std::unique_ptr<InputFile> obj = createObjFile(ctx, MemoryBufferRef(objBuf, ltoObjName));
+      if (ctx.arg.ltoLinkerScripts && ctx.script && kind != lto::LTO::TK_RegularLTO) {
+        assert(i - 1 < ctx.bitcodeFiles.size() && "Task index out of bounds of bitcodeFiles");
+        obj->originalFile = ctx.bitcodeFiles[i - 1];
+      }
+      ret.push_back(std::move(obj));
+    }
   }
   return ret;
 }

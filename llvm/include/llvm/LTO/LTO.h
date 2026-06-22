@@ -22,6 +22,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/LTO/Config.h"
@@ -140,7 +141,6 @@ private:
   // written out to a new standalone file.
   bool SerializeForDistribution = false;
   bool IsThinLTO = false;
-  bool IncludeLocalSymbols = false;
   StringRef ArchivePath;
   StringRef MemberName;
 
@@ -149,7 +149,7 @@ public:
 
   /// Create an InputFile.
   LLVM_ABI static Expected<std::unique_ptr<InputFile>>
-  create(MemoryBufferRef Object, bool IncludeLocalSymbols = false);
+  create(MemoryBufferRef Object);
 
   /// The purpose of this struct is to only expose the symbol information that
   /// an LTO client should need in order to do symbol resolution.
@@ -460,6 +460,15 @@ public:
   /// full description of tasks see LTOBackend.h.
   LLVM_ABI unsigned getMaxTasks() const;
 
+  enum TaskKind {
+    TK_RegularLTO,
+    TK_SplitTU,
+    TK_ThinLTO,
+  };
+
+  /// Returns the semantic kind of the task.
+  TaskKind getTaskKind(unsigned TaskID) const;
+
   /// Runs the LTO pipeline. This function calls the supplied AddStream
   /// function to add native object files to the link.
   ///
@@ -519,6 +528,7 @@ private:
     };
     std::vector<AddedModule> ModsWithSummaries;
     bool EmptyCombinedModule = true;
+    std::vector<std::string> TranslationUnits;
   } RegularLTO;
 
   using ModuleMapType = MapVector<StringRef, BitcodeModule>;

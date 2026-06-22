@@ -95,6 +95,9 @@ struct Config {
   /// want to know a priori all possible output files.
   bool AlwaysEmitRegularLTOObj = false;
 
+  /// Split the combined regular LTO module into separate TUs.
+  bool LTOSplitTUs = false;
+
   /// If true, the LTO instance creates copies of the symbol names for LTO::run.
   /// The lld linker uses string saver to keep symbol names alive and doesn't
   /// need to create copies, so it can set this field to false.

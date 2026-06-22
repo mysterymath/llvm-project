@@ -473,7 +473,7 @@ public:
   // one output section to another.
   llvm::DenseMap<llvm::CachedHashStringRef, SectionClassDesc *> sectionClasses;
 
-  llvm::StringMap<InputFile *> ltoInputFileMapping;
+
 };
 
 } // end namespace lld::elf

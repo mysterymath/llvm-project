@@ -113,27 +113,27 @@ CodeGenTargetMachineImpl::getTargetTransformInfo(const Function &F) const {
   return TargetTransformInfo(std::make_unique<BasicTTIImpl>(this, F));
 }
 
-/// addPassesToX helper drives creation and initialization of TargetPassConfig.
-static TargetPassConfig *
-addPassesToGenerateCode(CodeGenTargetMachineImpl &TM, PassManagerBase &PM,
-                        bool DisableVerify,
-                        MachineModuleInfoWrapperPass &MMIWP) {
+/// addPassesToGenerateCode - Expose target-independent and target-specific
+/// codegen pipeline construction.
+TargetPassConfig *
+CodeGenTargetMachineImpl::addPassesToGenerateCode(PassManagerBase &PM,
+                                                 bool DisableVerify,
+                                                 MachineModuleInfoWrapperPass &MMIWP) {
   // Targets may override createPassConfig to provide a target-specific
   // subclass.
-  TargetPassConfig *PassConfig = TM.createPassConfig(PM);
+  TargetPassConfig *PassConfig = createPassConfig(PM);
   // Set PassConfig options provided by TargetMachine.
   PassConfig->setDisableVerify(DisableVerify);
   PM.add(PassConfig);
   PM.add(&MMIWP);
 
-  const TargetOptions &Options = TM.Options;
-  TargetLibraryInfoImpl TLII(TM.getTargetTriple(), Options.VecLib);
+  TargetLibraryInfoImpl TLII(getTargetTriple(), Options.VecLib);
   PM.add(new TargetLibraryInfoWrapperPass(TLII));
   PM.add(new RuntimeLibraryInfoWrapper(
-      TM.getTargetTriple(), Options.ExceptionModel, Options.FloatABIType,
+      getTargetTriple(), Options.ExceptionModel, Options.FloatABIType,
       Options.EABIVersion, Options.MCOptions.ABIName, Options.VecLib));
 
-  invokeGlobalTargetPassConfigCallbacks(TM, PM, PassConfig);
+  invokeGlobalTargetPassConfigCallbacks(*this, PM, PassConfig);
 
   if (PassConfig->addISelPasses())
     return nullptr;
@@ -141,6 +141,8 @@ addPassesToGenerateCode(CodeGenTargetMachineImpl &TM, PassManagerBase &PM,
   PassConfig->setInitialized();
   return PassConfig;
 }
+
+
 
 bool CodeGenTargetMachineImpl::addAsmPrinter(PassManagerBase &PM,
                                              raw_pwrite_stream &Out,
@@ -237,7 +239,7 @@ bool CodeGenTargetMachineImpl::addPassesToEmitFile(
   if (!MMIWP)
     MMIWP = new MachineModuleInfoWrapperPass(this);
   TargetPassConfig *PassConfig =
-      addPassesToGenerateCode(*this, PM, DisableVerify, *MMIWP);
+      addPassesToGenerateCode(PM, DisableVerify, *MMIWP);
   if (!PassConfig)
     return true;
 
@@ -254,6 +256,9 @@ bool CodeGenTargetMachineImpl::addPassesToEmitFile(
   return false;
 }
 
+
+
+
 /// addPassesToEmitMC - Add passes to the specified pass manager to get
 /// machine code emitted with the MCJIT. This method returns true if machine
 /// code is not supported. It fills the MCContext Ctx pointer which can be
@@ -266,7 +271,7 @@ bool CodeGenTargetMachineImpl::addPassesToEmitMC(PassManagerBase &PM,
   // Add common CodeGen passes.
   MachineModuleInfoWrapperPass *MMIWP = new MachineModuleInfoWrapperPass(this);
   TargetPassConfig *PassConfig =
-      addPassesToGenerateCode(*this, PM, DisableVerify, *MMIWP);
+      addPassesToGenerateCode(PM, DisableVerify, *MMIWP);
   if (!PassConfig)
     return true;
   assert(TargetPassConfig::willCompleteCodeGenPipeline() &&

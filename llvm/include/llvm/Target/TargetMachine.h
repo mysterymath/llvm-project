@@ -500,6 +500,15 @@ public:
   /// EXPENSIVE_CHECKS is enabled.
   virtual bool isMachineVerifierClean() const { return true; }
 
+  /// Adds passes to the PassManager to generate machine code (compile IR to Machine IR),
+  /// but stops before the emission (AsmPrinter) phase.
+  /// Returns the TargetPassConfig created on success, or nullptr on failure.
+  virtual TargetPassConfig *addPassesToGenerateCode(PassManagerBase &PM,
+                                                    bool DisableVerify,
+                                                    MachineModuleInfoWrapperPass &MMIWP) {
+    return nullptr;
+  }
+
   /// Adds an AsmPrinter pass to the pipeline that prints assembly or
   /// machine code from the MI representation.
   virtual bool addAsmPrinter(PassManagerBase &PM, raw_pwrite_stream &Out,

@@ -109,6 +109,20 @@ void MachineModuleInfo::deleteMachineFunctionFor(Function &F) {
   LastResult = nullptr;
 }
 
+std::unique_ptr<MachineFunction> MachineModuleInfo::removeMachineFunction(const Function &F) {
+  auto It = MachineFunctions.find(&F);
+  if (It == MachineFunctions.end())
+    return nullptr;
+  std::unique_ptr<MachineFunction> MF = std::move(It->second);
+  MachineFunctions.erase(It);
+  if (LastRequest == &F) {
+    LastRequest = nullptr;
+    LastResult = nullptr;
+  }
+  return MF;
+}
+
+
 void MachineModuleInfo::insertFunction(const Function &F,
                                        std::unique_ptr<MachineFunction> &&MF) {
   auto I = MachineFunctions.insert(std::make_pair(&F, std::move(MF)));

@@ -149,6 +149,9 @@ public:
   /// Machine Function map.
   LLVM_ABI void deleteMachineFunctionFor(Function &F);
 
+  /// Remove the MachineFunction \p MF from the map and return it.
+  LLVM_ABI std::unique_ptr<MachineFunction> removeMachineFunction(const Function &F);
+
   /// Add an externally created MachineFunction \p MF for \p F.
   LLVM_ABI void insertFunction(const Function &F,
                                std::unique_ptr<MachineFunction> &&MF);

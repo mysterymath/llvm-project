@@ -78,6 +78,8 @@ public:
   StringRef getName() const { return mb.getBufferIdentifier(); }
   MemoryBufferRef mb;
 
+  const InputFile *originalFile = nullptr;
+
   // Returns sections. It is a runtime error to call this function
   // on files that don't have the notion of sections.
   ArrayRef<InputSectionBase *> getSections() const {
