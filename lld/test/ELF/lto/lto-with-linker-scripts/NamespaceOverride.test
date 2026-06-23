@@ -8,8 +8,8 @@
 
 # MAP: .foo
 # MAP: __foo_A
-# MAP: .text.Afun1
-# MAP: .text.Afun2
+# MAP-DAG: .text.Afun1
+# MAP-DAG: .text.Afun2
 # MAP: __foo_B
 # MAP: .text.Bfun1
 # MAP: .text.Bfun2

@@ -702,6 +702,26 @@ public:
 };
 }
 
+static unsigned applyTUUniqueID(
+    unsigned UniqueID, const GlobalObject *GO, StringRef SectionName,
+    unsigned &NextUniqueID,
+    std::map<std::pair<unsigned, std::string>, unsigned> &TUSectionUniqueIDs) {
+  if (UniqueID != MCSection::NonUniqueID)
+    return UniqueID;
+  auto TUIndex = GO->getLTOComponentTUIndex();
+  if (!TUIndex)
+    return UniqueID;
+
+  auto Key = std::make_pair(*TUIndex, std::string(SectionName));
+  auto It = TUSectionUniqueIDs.find(Key);
+  if (It != TUSectionUniqueIDs.end())
+    return It->second;
+
+  unsigned NewID = NextUniqueID++;
+  TUSectionUniqueIDs[Key] = NewID;
+  return NewID;
+}
+
 /// Calculate an appropriate unique ID for a section, and update Flags,
 /// EntrySize and NextUniqueID where appropriate.
 static unsigned
@@ -837,12 +857,11 @@ static StringRef handlePragmaClangSection(const GlobalObject *GO,
   return GO->getSection();
 }
 
-static MCSection *selectExplicitSectionGlobal(const GlobalObject *GO,
-                                              SectionKind Kind,
-                                              const TargetMachine &TM,
-                                              MCContext &Ctx, Mangler &Mang,
-                                              unsigned &NextUniqueID,
-                                              bool Retain, bool ForceUnique) {
+static MCSection *selectExplicitSectionGlobal(
+    const GlobalObject *GO, SectionKind Kind, const TargetMachine &TM,
+    MCContext &Ctx, Mangler &Mang, unsigned &NextUniqueID,
+    std::map<std::pair<unsigned, std::string>, unsigned> &TUSectionUniqueIDs,
+    bool Retain, bool ForceUnique) {
   StringRef SectionName = handlePragmaClangSection(GO, Kind);
 
   // Infer section flags from the section name if we can.
@@ -857,15 +876,17 @@ static MCSection *selectExplicitSectionGlobal(const GlobalObject *GO,
       GO, SectionName, Kind, TM, Ctx, Mang, Flags, EntrySize, NextUniqueID,
       Retain, ForceUnique);
 
+  unsigned NewUniqueID = applyTUUniqueID(UniqueID, GO, SectionName,
+                                         NextUniqueID, TUSectionUniqueIDs);
+
   const MCSymbolELF *LinkedToSym = getLinkedToSymbol(GO, TM);
   MCSectionELF *Section =
       Ctx.getELFSection(SectionName, Type, Flags, EntrySize, Group, IsComdat,
-                        UniqueID, LinkedToSym);
+                        NewUniqueID, LinkedToSym);
   // Make sure that we did not get some other section with incompatible sh_link.
   // This should not be possible due to UniqueID code above.
   assert(Section->getLinkedToSymbol() == LinkedToSym &&
          "Associated symbol mismatch between sections");
-
   if (!(Ctx.getAsmInfo().useIntegratedAssembler() ||
         Ctx.getAsmInfo().binutilsIsAtLeast(2, 35))) {
     // If we are using GNU as before 2.35, then this symbol might have
@@ -889,14 +910,16 @@ static MCSection *selectExplicitSectionGlobal(const GlobalObject *GO,
 MCSection *TargetLoweringObjectFileELF::getExplicitSectionGlobal(
     const GlobalObject *GO, SectionKind Kind, const TargetMachine &TM) const {
   return selectExplicitSectionGlobal(GO, Kind, TM, getContext(), getMangler(),
-                                     NextUniqueID, Used.count(GO),
-                                     /* ForceUnique = */false);
+                                     NextUniqueID, TUSectionUniqueIDs,
+                                     Used.count(GO), /* ForceUnique = */false);
 }
 
 static MCSectionELF *selectELFSectionForGlobal(
     MCContext &Ctx, const GlobalObject *GO, SectionKind Kind, Mangler &Mang,
     const TargetMachine &TM, bool EmitUniqueSection, unsigned Flags,
-    unsigned *NextUniqueID, const MCSymbolELF *AssociatedSymbol,
+    unsigned *NextUniqueID,
+    std::map<std::pair<unsigned, std::string>, unsigned> &TUSectionUniqueIDs,
+    const MCSymbolELF *AssociatedSymbol,
     const MachineJumpTableEntry *MJTE = nullptr) {
   bool UniqueSectionName = false;
   unsigned UniqueID = MCSection::NonUniqueID;
@@ -918,14 +941,19 @@ static MCSectionELF *selectELFSectionForGlobal(
   // Use 0 as the unique ID for execute-only text.
   if (Kind.isExecuteOnly())
     UniqueID = 0;
+
+  unsigned NewUniqueID =
+      applyTUUniqueID(UniqueID, GO, Name, *NextUniqueID, TUSectionUniqueIDs);
+
   return Ctx.getELFSection(Name, Type, Flags, EntrySize, Group, IsComdat,
-                           UniqueID, AssociatedSymbol);
+                           NewUniqueID, AssociatedSymbol);
 }
 
 static MCSection *selectELFSectionForGlobal(
     MCContext &Ctx, const GlobalObject *GO, SectionKind Kind, Mangler &Mang,
     const TargetMachine &TM, bool Retain, bool EmitUniqueSection,
-    unsigned Flags, unsigned *NextUniqueID) {
+    unsigned Flags, unsigned *NextUniqueID,
+    std::map<std::pair<unsigned, std::string>, unsigned> &TUSectionUniqueIDs) {
   const MCSymbolELF *LinkedToSym = getLinkedToSymbol(GO, TM);
   if (LinkedToSym) {
     EmitUniqueSection = true;
@@ -946,7 +974,7 @@ static MCSection *selectELFSectionForGlobal(
 
   MCSectionELF *Section = selectELFSectionForGlobal(
       Ctx, GO, Kind, Mang, TM, EmitUniqueSection, Flags,
-      NextUniqueID, LinkedToSym);
+      NextUniqueID, TUSectionUniqueIDs, LinkedToSym);
   assert(Section->getLinkedToSymbol() == LinkedToSym);
   return Section;
 }
@@ -967,7 +995,7 @@ MCSection *TargetLoweringObjectFileELF::SelectSectionForGlobal(
   EmitUniqueSection |= GO->hasComdat();
   return selectELFSectionForGlobal(getContext(), GO, Kind, getMangler(), TM,
                                    Used.count(GO), EmitUniqueSection, Flags,
-                                   &NextUniqueID);
+                                   &NextUniqueID, TUSectionUniqueIDs);
 }
 
 MCSection *TargetLoweringObjectFileELF::getUniqueSectionForFunction(
@@ -979,11 +1007,11 @@ MCSection *TargetLoweringObjectFileELF::getUniqueSectionForFunction(
   if (F.hasSection())
     return selectExplicitSectionGlobal(
         &F, Kind, TM, getContext(), getMangler(), NextUniqueID,
-        Used.count(&F), /* ForceUnique = */true);
+        TUSectionUniqueIDs, Used.count(&F), /* ForceUnique = */true);
 
   return selectELFSectionForGlobal(
       getContext(), &F, Kind, getMangler(), TM, Used.count(&F),
-      /*EmitUniqueSection=*/true, Flags, &NextUniqueID);
+      /*EmitUniqueSection=*/true, Flags, &NextUniqueID, TUSectionUniqueIDs);
 }
 
 MCSection *TargetLoweringObjectFileELF::getSectionForJumpTable(
@@ -1004,6 +1032,7 @@ MCSection *TargetLoweringObjectFileELF::getSectionForJumpTable(
   return selectELFSectionForGlobal(getContext(), &F, SectionKind::getReadOnly(),
                                    getMangler(), TM, EmitUniqueSection,
                                    ELF::SHF_ALLOC, &NextUniqueID,
+                                   TUSectionUniqueIDs,
                                    /* AssociatedSymbol */ nullptr, JTE);
 }
 

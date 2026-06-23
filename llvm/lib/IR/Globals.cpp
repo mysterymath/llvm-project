@@ -327,6 +327,21 @@ std::optional<StringRef> GlobalObject::getSectionPrefix() const {
   return std::nullopt;
 }
 
+std::optional<unsigned> GlobalObject::getLTOComponentTUIndex() const {
+  llvm::Attribute Attr;
+  if (auto *F = dyn_cast<Function>(this))
+    Attr = F->getFnAttribute("lto.tu");
+  else if (auto *GV = dyn_cast<GlobalVariable>(this))
+    Attr = GV->getAttribute("lto.tu");
+
+  if (!Attr.isValid())
+    return std::nullopt;
+
+  unsigned Val;
+  Attr.getValueAsString().getAsInteger(10, Val);
+  return Val;
+}
+
 bool GlobalValue::isNobuiltinFnDef() const {
   const Function *F = dyn_cast<Function>(this);
   if (!F || F->empty())

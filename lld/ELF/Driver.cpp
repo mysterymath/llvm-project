@@ -3473,6 +3473,28 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
     initSectionsAndLocalSyms(file, /*ignoreComdats=*/true);
   });
   parallelForEach(newObjectFiles, postParseObjectFile);
+
+  // Parse the .llvm.lto.tu.map section from LTO-generated object files
+  for (ELFFileBase *fileBase : newObjectFiles) {
+    if (auto *file = dyn_cast<ObjFile<ELFT>>(fileBase)) {
+      if (file->ltoTUMapSec) {
+        ArrayRef<uint8_t> data = check(file->getObj().getSectionContents(*file->ltoTUMapSec));
+        const uint8_t *cur = data.data();
+        const uint8_t *end = cur + data.size();
+        auto sections = file->getSections();
+        while (cur != end) {
+          unsigned size;
+          uint64_t secIndex = decodeULEB128(cur, &size);
+          cur += size;
+          uint64_t tuIndex = decodeULEB128(cur, &size);
+          cur += size;
+
+          ctx.script->ltoSectionRedirection[sections[secIndex]] =
+              ctx.bitcodeFiles[tuIndex];
+        }
+      }
+    }
+  }
   for (const DuplicateSymbol &d : ctx.duplicates)
     reportDuplicate(ctx, *d.sym, d.file, d.section, d.value);
 
@@ -3513,6 +3535,8 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
       for (InputSectionBase *s : f->getSections()) {
         if (!s || s == &InputSection::discarded)
           continue;
+
+
         if (LLVM_UNLIKELY(isa<EhInputSection>(s)))
           ctx.ehInputSections.push_back(cast<EhInputSection>(s));
         else

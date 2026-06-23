@@ -14,6 +14,7 @@
 #ifndef LLVM_CODEGEN_TARGETLOWERINGOBJECTFILEIMPL_H
 #define LLVM_CODEGEN_TARGETLOWERINGOBJECTFILEIMPL_H
 
+#include <map>
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/BinaryFormat/XCOFF.h"
 #include "llvm/MC/MCExpr.h"
@@ -34,6 +35,7 @@ class TargetMachine;
 class TargetLoweringObjectFileELF : public TargetLoweringObjectFile {
   bool UseInitArray = false;
   mutable unsigned NextUniqueID = 1;  // ID 0 is reserved for execute-only sections
+  mutable std::map<std::pair<unsigned, std::string>, unsigned> TUSectionUniqueIDs;
   SmallPtrSet<GlobalObject *, 2> Used;
 
 protected:

@@ -21,6 +21,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -783,6 +784,14 @@ MCSymbol *AsmPrinter::getSymbolPreferLocal(const GlobalValue &GV) const {
 
 /// EmitGlobalVariable - Emit the specified global variable to the .s file.
 void AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
+  std::optional<unsigned> TUIndex = GV->getLTOComponentTUIndex();
+  if (TUIndex)
+    OutStreamer->emitLTOTUStart(*TUIndex);
+  llvm::scope_exit CleanUp([&]() {
+    if (TUIndex)
+      OutStreamer->emitLTOTUEnd();
+  });
+
   bool IsEmuTLSVar = TM.useEmulatedTLS() && GV->isThreadLocal();
   assert(!(IsEmuTLSVar && GV->hasCommonLinkage()) &&
          "No emulated TLS variables in the common section");
@@ -2044,6 +2053,15 @@ void AsmPrinter::emitDanglingPrefetchTargets() {
 /// EmitFunctionBody - This method emits the body and trailer for a
 /// function.
 void AsmPrinter::emitFunctionBody() {
+  const Function &F = MF->getFunction();
+  std::optional<unsigned> TUIndex = F.getLTOComponentTUIndex();
+  if (TUIndex)
+    OutStreamer->emitLTOTUStart(*TUIndex);
+  llvm::scope_exit CleanUp([&]() {
+    if (TUIndex)
+      OutStreamer->emitLTOTUEnd();
+  });
+
   emitFunctionHeader();
 
   // Emit target-specific gunk before the function body.
@@ -2426,7 +2444,6 @@ void AsmPrinter::emitFunctionBody() {
   // Switch to the original section in case basic block sections was used.
   OutStreamer->switchSection(MF->getSection());
 
-  const Function &F = MF->getFunction();
   for (const auto &BB : F) {
     if (!BB.hasAddressTaken())
       continue;

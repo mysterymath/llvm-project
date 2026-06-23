@@ -1101,6 +1101,8 @@ public:
 
   virtual void emitAddrsig() {}
   virtual void emitAddrsigSym(const MCSymbol *Sym) {}
+  virtual void emitLTOTUStart(unsigned Index) {}
+  virtual void emitLTOTUEnd() {}
 
   /// Emit the given \p Instruction into the current section.
   virtual void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI);

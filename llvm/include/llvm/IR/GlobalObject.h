@@ -134,6 +134,10 @@ public:
   /// Get the section prefix for this global object.
   LLVM_ABI std::optional<StringRef> getSectionPrefix() const;
 
+  /// Get the LTO translation unit (TU) index associated with this global object,
+  /// if it was branded during LTO.
+  LLVM_ABI std::optional<unsigned> getLTOComponentTUIndex() const;
+
   bool hasComdat() const { return getComdat() != nullptr; }
   const Comdat *getComdat() const { return ObjComdat; }
   Comdat *getComdat() { return ObjComdat; }

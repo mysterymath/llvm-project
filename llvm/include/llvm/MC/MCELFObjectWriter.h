@@ -148,6 +148,7 @@ public:
   raw_pwrite_stream *DwoOS = nullptr;
 
   DenseMap<const MCSectionELF *, std::vector<ELFRelocationEntry>> Relocations;
+  DenseMap<const MCSectionELF *, unsigned> SectionToTUMap;
   DenseMap<const MCSymbolELF *, const MCSymbolELF *> Renames;
   // .weakref aliases
   SmallVector<const MCSymbolELF *, 0> Weakrefs;

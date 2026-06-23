@@ -193,6 +193,7 @@ public:
   void computeSymbolTable(const RevGroupMapTy &RevGroupMap);
 
   void writeAddrsigSection();
+  void writeLTOTUMapSection();
 
   MCSectionELF *createRelocationSection(MCContext &Ctx,
                                         const MCSectionELF &Sec);
@@ -662,6 +663,17 @@ void ELFWriter::writeAddrsigSection() {
       encodeULEB128(Sym->getIndex(), W.OS);
 }
 
+void ELFWriter::writeLTOTUMapSection() {
+  for (const auto &Pair : OWriter.SectionToTUMap) {
+    const MCSectionELF *Sec = Pair.first;
+    unsigned TUIndex = Pair.second;
+    if (TUIndex != ~0U) {
+      encodeULEB128(Sec->getOrdinal(), W.OS);
+      encodeULEB128(TUIndex, W.OS);
+    }
+  }
+}
+
 MCSectionELF *ELFWriter::createRelocationSection(MCContext &Ctx,
                                                  const MCSectionELF &Sec) {
   if (OWriter.Relocations[&Sec].empty())
@@ -1078,6 +1090,13 @@ uint64_t ELFWriter::writeObject() {
       addToSectionTable(AddrsigSection);
     }
 
+    MCSectionELF *LTOTUMapSection = nullptr;
+    if (!OWriter.SectionToTUMap.empty()) {
+      LTOTUMapSection = Ctx.getELFSection(".llvm.lto.tu.map", ELF::SHT_LLVM_LTO_TU_MAP,
+                                          ELF::SHF_EXCLUDE);
+      addToSectionTable(LTOTUMapSection);
+    }
+
     // Compute symbol table information.
     computeSymbolTable(RevGroupMap);
 
@@ -1097,6 +1116,13 @@ uint64_t ELFWriter::writeObject() {
       writeAddrsigSection();
       uint64_t SecEnd = W.OS.tell();
       AddrsigSection->setOffsets(SecStart, SecEnd);
+    }
+
+    if (LTOTUMapSection) {
+      uint64_t SecStart = W.OS.tell();
+      writeLTOTUMapSection();
+      uint64_t SecEnd = W.OS.tell();
+      LTOTUMapSection->setOffsets(SecStart, SecEnd);
     }
   }
 

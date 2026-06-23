@@ -451,8 +451,10 @@ bool SectionPattern::excludesFile(const InputFile &file) const {
 }
 
 bool LinkerScript::shouldKeep(InputSectionBase *s) {
+  const InputFile *originalFile = ltoSectionRedirection.lookup(s);
+  const InputFile *file = originalFile ? originalFile : s->file;
   for (InputSectionDescription *id : keptSections)
-    if (id->matchesFile(*s->file))
+    if (id->matchesFile(*file))
       for (SectionPattern &p : id->sectionPatterns)
         if (p.sectionPat.match(s->name) &&
             (s->flags & id->withFlags) == id->withFlags &&
@@ -617,16 +619,8 @@ LinkerScript::computeInputSections(const InputSectionDescription *cmd,
           continue;
 
         StringRef sectionName = sec->name;
-        const InputFile *sectionFile = sec->file;
-        if (ctx.arg.ltoLinkerScripts) {
-          auto splitSectionName = sec->name.split("^^");
-          if (StringRef filename = splitSectionName.second; !filename.empty()) {
-            if (const InputFile *file = ltoInputFileMapping.lookup(filename)) {
-              sectionName = splitSectionName.first;
-              sectionFile = file;
-            }
-          }
-        }
+        const InputFile *originalFile = ltoSectionRedirection.lookup(sec);
+        const InputFile *sectionFile = originalFile ? originalFile : sec->file;
         // Check the name early to improve performance in the common case.
         if (!pat.sectionPat.match(sectionName))
           continue;

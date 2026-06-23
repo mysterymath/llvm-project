@@ -268,6 +268,9 @@ public:
   // Pointer to this input file's .llvm_addrsig section, if it has one.
   const Elf_Shdr *addrsigSec = nullptr;
 
+  // Pointer to this input file's .llvm.lto.tu.map section, if it has one.
+  const Elf_Shdr *ltoTUMapSec = nullptr;
+
   // SHT_LLVM_CALL_GRAPH_PROFILE section index.
   uint32_t cgProfileSectionIndex = 0;
 

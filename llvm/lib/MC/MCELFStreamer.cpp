@@ -79,8 +79,18 @@ void MCELFStreamer::emitLabelAtPos(MCSymbol *S, SMLoc Loc, MCFragment &F,
 }
 
 void MCELFStreamer::changeSection(MCSection *Section, uint32_t Subsection) {
-  MCAssembler &Asm = getAssembler();
   auto *SectionELF = static_cast<const MCSectionELF *>(Section);
+  if (CurrentLTOTUIndex) {
+    unsigned TUIndex = *CurrentLTOTUIndex;
+    ELFObjectWriter &OWriter = getWriter();
+    auto [It, Inserted] = OWriter.SectionToTUMap.try_emplace(SectionELF, TUIndex);
+    if (!Inserted && It->second != TUIndex && It->second != ~0U) {
+      // Conflict! Mark it as shared permanently using the ~0U sentinel.
+      It->second = ~0U;
+    }
+  }
+
+  MCAssembler &Asm = getAssembler();
   const MCSymbol *Grp = SectionELF->getGroup();
   if (Grp)
     Asm.registerSymbol(*Grp);
@@ -588,6 +598,14 @@ void MCELFStreamer::createAttributesWithSubsection(
     }
   }
   SubSectionVec.clear();
+}
+
+void MCELFStreamer::emitLTOTUStart(unsigned Index) {
+  CurrentLTOTUIndex = Index;
+}
+
+void MCELFStreamer::emitLTOTUEnd() {
+  CurrentLTOTUIndex = std::nullopt;
 }
 
 MCStreamer *llvm::createELFStreamer(MCContext &Context,

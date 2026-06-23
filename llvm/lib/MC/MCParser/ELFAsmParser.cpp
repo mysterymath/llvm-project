@@ -638,6 +638,8 @@ EndStmt:
       Type = ELF::SHT_LLVM_CFI_JUMP_TABLE;
     else if (TypeName == "llvm_call_graph")
       Type = ELF::SHT_LLVM_CALL_GRAPH;
+    else if (TypeName == "llvm_lto_tu_map")
+      Type = ELF::SHT_LLVM_LTO_TU_MAP;
     else if (TypeName.getAsInteger(0, Type))
       return TokError("unknown section type");
   }

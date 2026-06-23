@@ -6,7 +6,7 @@
 # RUN: FileCheck %s < %t/map.txt
 
 # CHECK: .tcm
-# CHECK-NEXT: 1.o
+# CHECK-NEXT: {{.*}}out.lto.o:(.tcm_static)
 # CHECK-NEXT: $x
 # CHECK-NEXT: bar
 # CHECK: .text

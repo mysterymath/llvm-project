@@ -35,6 +35,7 @@
 #include "llvm/IR/RuntimeLibcalls.h"
 #include "llvm/LTO/LTOBackend.h"
 #include "llvm/Linker/IRMover.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/IRObjectFile.h"
 #include "llvm/Support/Caching.h"
@@ -622,14 +623,13 @@ void llvm::thinLTOInternalizeAndPromoteInIndex(
 InputFile::~InputFile() = default;
 
 Expected<std::unique_ptr<InputFile>>
-InputFile::create(MemoryBufferRef Object, bool IncludeLocalSymbols) {
+InputFile::create(MemoryBufferRef Object) {
   std::unique_ptr<InputFile> File(new InputFile);
 
   Expected<IRSymtabFile> FOrErr = readIRSymtab(Object);
   if (!FOrErr)
     return FOrErr.takeError();
 
-  File->IncludeLocalSymbols = IncludeLocalSymbols;
   File->TargetTriple = FOrErr->TheReader.getTargetTriple();
   File->SourceFileName = FOrErr->TheReader.getSourceFileName();
   File->COFFLinkerOpts = FOrErr->TheReader.getCOFFLinkerOpts();
@@ -644,13 +644,8 @@ InputFile::create(MemoryBufferRef Object, bool IncludeLocalSymbols) {
          FOrErr->TheReader.module_symbols(I)) {
       // Skip symbols that are irrelevant to LTO. Note that this condition needs
       // to match the one in Skip() in LTO::addRegularLTO().
-      if (IncludeLocalSymbols) {
-        if (!Sym.isFormatSpecific() || Sym.isPrivate())
-          File->Symbols.push_back(Sym);
-      } else {
-        if (Sym.isGlobal() && !Sym.isFormatSpecific())
-          File->Symbols.push_back(Sym);
-      }
+      if (Sym.isGlobal() && !Sym.isFormatSpecific())
+        File->Symbols.push_back(Sym);
     }
     File->ModuleSymIndices.push_back({Begin, File->Symbols.size()});
   }
@@ -828,7 +823,8 @@ static void writeToResolutionFile(raw_ostream &OS, InputFile *Input,
 }
 
 Error LTO::add(std::unique_ptr<InputFile> InputPtr,
-               ArrayRef<SymbolResolution> Res) {
+               ArrayRef<SymbolResolution> Res,
+               StringMap<SectionResolution> SectionRes) {
   llvm::TimeTraceScope timeScope("LTO add input", InputPtr->getName());
   assert(!CalledGetMaxTasks);
 
@@ -837,6 +833,7 @@ Error LTO::add(std::unique_ptr<InputFile> InputPtr,
   if (!InputOrErr)
     return InputOrErr.takeError();
   InputFile *Input = (*InputOrErr).get();
+  Input->TUIndex = NumTUs++;
 
   if (Conf.ResolutionFile)
     writeToResolutionFile(*Conf.ResolutionFile, Input, Res);
@@ -847,6 +844,9 @@ Error LTO::add(std::unique_ptr<InputFile> InputPtr,
     if (InputTriple.isOSBinFormatELF())
       Conf.VisibilityScheme = Config::ELF;
   }
+
+  // Stash the section resolutions for this TU
+  TUSectionResolutions.push_back(std::move(SectionRes));
 
   ArrayRef<SymbolResolution> InputRes = Res;
   for (unsigned I = 0; I != Input->Mods.size(); ++I) {
@@ -979,6 +979,17 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
   if (Error Err = M.materializeMetadata())
     return std::move(Err);
 
+  // Attach the "lto.tu" attribute to all defined functions and globals
+  std::string TUIndexStr = std::to_string(Input.TUIndex);
+  for (GlobalObject &GO : M.global_objects()) {
+    if (GO.isDeclaration())
+      continue;
+    if (auto *F = dyn_cast<Function>(&GO))
+      F->addFnAttr("lto.tu", TUIndexStr);
+    else if (auto *GV = dyn_cast<GlobalVariable>(&GO))
+      GV->addAttribute("lto.tu", TUIndexStr);
+  }
+
   if (LTOMode == LTOK_UnifiedRegular) {
     // cfi.functions metadata is intended to be used with ThinLTO and may
     // trigger invalid IR transformations if they are present when doing regular
@@ -1033,15 +1044,9 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
   auto Skip = [&]() {
     while (MsymI != MsymE) {
       auto Flags = SymTab.getSymbolFlags(*MsymI);
-      if (Input.IncludeLocalSymbols) {
-        if (!(Flags & object::BasicSymbolRef::SF_FormatSpecific) ||
-            (Flags & object::BasicSymbolRef::SF_Private))
-          return;
-      } else {
-        if ((Flags & object::BasicSymbolRef::SF_Global) &&
-            !(Flags & object::BasicSymbolRef::SF_FormatSpecific))
-          return;
-      }
+      if ((Flags & object::BasicSymbolRef::SF_Global) &&
+          !(Flags & object::BasicSymbolRef::SF_FormatSpecific))
+        return;
       ++MsymI;
     }
   };
@@ -1107,17 +1112,11 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
             GVar->setAttributes(AttributeSet::get(GVar->getContext(), Attrs));
           }
           GVar->addAttribute("linker_output_section", R.OutputSectionName);
-          if (GVar->hasSection())
-            GVar->setSection(
-                (GVar->getSection() + "^^" + M.getModuleIdentifier()).str());
         } else if (auto *F = dyn_cast<Function>(GV)) {
           // First, remove the old attribute if present
           if (F->hasFnAttribute("linker_output_section"))
             F->removeFnAttr("linker_output_section");
           F->addFnAttr("linker_output_section", R.OutputSectionName);
-          if (F->hasSection())
-            F->setSection(
-                (F->getSection() + "^^" + M.getModuleIdentifier()).str());
         }
       }
     } else if (auto *AS =
@@ -1403,6 +1402,40 @@ Error LTO::run(AddStreamFn AddStream, FileCache Cache) {
   return Result;
 }
 
+static void applySectionResolutions(Module &M, ArrayRef<StringMap<SectionResolution>> TUResolutions) {
+  SmallVector<GlobalValue *, 4> Keep;
+
+  auto ProcessGO = [&](GlobalObject &GO) {
+    if (GO.isDeclaration())
+      return;
+    StringRef Sec = GO.getSection();
+    if (Sec.empty())
+      return;
+    
+    auto TUIndex = GO.getLTOComponentTUIndex();
+    if (!TUIndex)
+      return;
+
+    const auto &Map = TUResolutions[*TUIndex];
+    SectionResolution Res = Map.lookup(Sec);
+    if (!Res.OutputSectionName.empty()) {
+      if (auto *F = dyn_cast<Function>(&GO))
+        F->addFnAttr("linker_output_section", Res.OutputSectionName);
+      else if (auto *GVar = dyn_cast<GlobalVariable>(&GO))
+        GVar->addAttribute("linker_output_section", Res.OutputSectionName);
+    }
+    
+    if (Res.Keep)
+      Keep.push_back(&GO);
+  };
+
+  for (GlobalObject &GO : M.global_objects())
+    ProcessGO(GO);
+
+  if (!Keep.empty())
+    appendToCompilerUsed(M, Keep);
+}
+
 Error LTO::runRegularLTO(AddStreamFn AddStream) {
   llvm::TimeTraceScope timeScope("Run regular LTO");
   LLVM_DEBUG(dbgs() << "Running regular LTO\n");
@@ -1415,6 +1448,9 @@ Error LTO::runRegularLTO(AddStreamFn AddStream) {
       if (Error Err = linkRegularLTO(std::move(M), /*LivenessFromIndex=*/true))
         return Err;
   }
+
+  // Apply section resolutions (from linker script) to the combined module
+  applySectionResolutions(*RegularLTO.CombinedModule, TUSectionResolutions);
 
   // Ensure we don't have inconsistently split LTO units with type tests.
   // FIXME: this checks both LTO and ThinLTO. It happens to work as we take

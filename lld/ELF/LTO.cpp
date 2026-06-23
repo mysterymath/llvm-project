@@ -19,8 +19,12 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/ELF.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/DTLTO/DTLTO.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
 #include "llvm/LTO/Config.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Support/Caching.h"
@@ -244,8 +248,6 @@ void BitcodeCompiler::add(BitcodeFile &f) {
 
   ArrayRef<Symbol *> syms = f.getSymbols();
   ArrayRef<lto::InputFile::Symbol> objSyms = obj.symbols();
-  if (ctx.arg.ltoLinkerScripts && ctx.script)
-    ctx.script->ltoInputFileMapping[obj.getName()] = &f;
   std::vector<lto::SymbolResolution> resols(syms.size());
 
   // Provide a resolution to the LTO API for each symbol.
@@ -298,13 +300,27 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // their values are still not final.
     r.LinkerRedefined = sym->scriptDefined;
 
-    StringRef inputSection = objSym.getSectionName();
-    if (!inputSection.empty() && ctx.script && ctx.arg.ltoLinkerScripts) {
-      r.VisibleToRegularObj |= ctx.script->shouldKeep(inputSection, &f);
-      r.OutputSectionName = ctx.script->mapLTOSectionName(inputSection, &f);
+  }
+
+  llvm::StringMap<lto::SectionResolution> sectionRes;
+  if (ctx.arg.ltoLinkerScripts && ctx.script) {
+    LLVMContext lCtx;
+    std::unique_ptr<Module> M = cantFail(
+        getLazyBitcodeModule(f.mb, lCtx, /*ShouldLazyLoadMetadata=*/true));
+    for (GlobalObject &GO : M->global_objects()) {
+      if (GO.isDeclarationForLinker() || GO.getName().starts_with("llvm."))
+        continue;
+      if (GO.hasSection()) {
+        StringRef secName = GO.getSection();
+        lto::SectionResolution r;
+        r.Keep = ctx.script->shouldKeep(secName, &f);
+        r.OutputSectionName = ctx.script->mapLTOSectionName(secName, &f);
+        sectionRes[secName] = std::move(r);
+      }
     }
   }
-  checkError(ctx.e, ltoObj->add(std::move(f.obj), resols));
+
+  checkError(ctx.e, ltoObj->add(std::move(f.obj), resols, std::move(sectionRes)));
 }
 
 // If LazyObjFile has not been added to link, emit empty index files.

@@ -20,6 +20,7 @@ class MCContext;
 class MCFragment;
 class MCObjectWriter;
 class MCSection;
+class MCSectionELF;
 class MCSubtargetInfo;
 class MCSymbol;
 class MCSymbolRefExpr;
@@ -68,6 +69,9 @@ public:
 
   void emitCGProfileEntry(const MCSymbolRefExpr *From,
                           const MCSymbolRefExpr *To, uint64_t Count) override;
+
+  void emitLTOTUStart(unsigned Index) override;
+  void emitLTOTUEnd() override;
 
   // This is final. Override MCTargetStreamer::finish instead for
   // target-specific code.
@@ -146,6 +150,12 @@ private:
   void finalizeCGProfile();
 
   bool SeenIdent = false;
+
+  /// The active LTO translation unit index being emitted. Set by emitLTOTUStart
+  /// and cleared by emitLTOTUEnd. Used to brand switched sections.
+  std::optional<unsigned> CurrentLTOTUIndex;
+
+
 };
 
 MCELFStreamer *createARMELFStreamer(MCContext &Context,

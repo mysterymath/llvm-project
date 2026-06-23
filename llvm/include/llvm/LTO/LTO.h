@@ -22,6 +22,8 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/LTO/Config.h"
@@ -110,6 +112,11 @@ LLVM_ABI std::vector<int> generateModulesOrdering(ArrayRef<BitcodeModule *> R);
 class LTO;
 struct SymbolResolution;
 
+struct SectionResolution {
+  std::string OutputSectionName;
+  bool Keep = false;
+};
+
 /// An input file. This is a symbol table wrapper that only exposes the
 /// information that an LTO client should need in order to do symbol resolution.
 class InputFile {
@@ -140,16 +147,16 @@ private:
   // written out to a new standalone file.
   bool SerializeForDistribution = false;
   bool IsThinLTO = false;
-  bool IncludeLocalSymbols = false;
   StringRef ArchivePath;
   StringRef MemberName;
+  unsigned TUIndex = -1u;
 
 public:
   LLVM_ABI ~InputFile();
 
   /// Create an InputFile.
   LLVM_ABI static Expected<std::unique_ptr<InputFile>>
-  create(MemoryBufferRef Object, bool IncludeLocalSymbols = false);
+  create(MemoryBufferRef Object);
 
   /// The purpose of this struct is to only expose the symbol information that
   /// an LTO client should need in order to do symbol resolution.
@@ -448,7 +455,8 @@ public:
   /// The symbol resolutions must appear in the enumeration order given by
   /// InputFile::symbols().
   LLVM_ABI Error add(std::unique_ptr<InputFile> Obj,
-                     ArrayRef<SymbolResolution> Res);
+                     ArrayRef<SymbolResolution> Res,
+                     StringMap<SectionResolution> SectionRes = {});
 
   /// Set the list of functions implemented in bitcode that were not extracted
   /// from an archive. Such functions may not be referenced, as they have
@@ -678,6 +686,9 @@ private:
   // from their libraries. Such functions cannot safely be called, since
   // they have lost their opportunity to be defined.
   SmallVector<StringRef> BitcodeLibFuncs;
+
+  unsigned NumTUs = 0;
+  SmallVector<StringMap<SectionResolution>, 0> TUSectionResolutions;
 
 public:
   /// Helper to emit an optimization remark during the LTO link when outside of
