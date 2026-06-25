@@ -1,0 +1,74 @@
+# REQUIRES: aarch64
+# RUN: rm -rf %t && split-file %s %t
+# RUN: llvm-as %t/A.ll -o %t/A.o
+# RUN: llvm-mc -filetype=obj -triple=aarch64-unknown-linux-gnu %t/B.s -o %t/B.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts -Map=%t/map.txt -T %t/script.t %t/A.o %t/B.o -o %t/out
+# RUN: FileCheck %s --check-prefix=MAP < %t/map.txt
+
+# MAP: .foo
+# MAP: __foo_A
+# MAP-DAG: .text.Afun
+# MAP-DAG: .gcc_except_table
+# MAP: __foo_B
+# MAP: .text.Bfun
+# MAP: __foo_end
+
+#--- A.ll
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"
+target triple = "aarch64-unknown-linux-gnu"
+
+declare i32 @__gxx_personality_v0(...)
+declare void @external_throw()
+
+define void @Afun() section ".text.Afun" personality ptr @__gxx_personality_v0 {
+  invoke void @external_throw() to label %cont unwind label %lpad
+
+cont:
+  ret void
+
+lpad:
+  %lp = landingpad { ptr, i32 } filter [0 x ptr] zeroinitializer
+  ret void
+}
+
+#--- B.s
+.text
+.section .text.Bfun,"ax",@progbits
+.globl Bfun
+.type Bfun,@function
+Bfun:
+  ret
+.size Bfun, .-Bfun
+
+.section .text.main,"ax",@progbits
+.globl main
+.type main,@function
+main:
+  bl Afun
+  bl Bfun
+  ret
+.size main, .-main
+
+# Dummy definitions to satisfy the linker
+.globl __gxx_personality_v0
+.type __gxx_personality_v0,@function
+__gxx_personality_v0:
+  ret
+.size __gxx_personality_v0, .-__gxx_personality_v0
+
+.globl external_throw
+.type external_throw,@function
+external_throw:
+  ret
+.size external_throw, .-external_throw
+
+#--- script.t
+SECTIONS {
+  .foo : {
+     __foo_A = .;
+     *A.o(.text* .gcc_except_table*)
+     __foo_B = .;
+     *B.o(.text* .gcc_except_table*)
+     __foo_end = .;
+     }
+}
