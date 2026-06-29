@@ -198,7 +198,7 @@ enum ValueSymtabCodes {
   VST_CODE_COMBINED_ENTRY = 5
 };
 
-// The module path symbol table only has one code (MST_CODE_ENTRY).
+// The module path symbol table enums.
 enum ModulePathSymtabCodes {
   MST_CODE_ENTRY = 1, // MST_ENTRY: [modid, namechar x N]
   MST_CODE_HASH = 2,  // MST_HASH:  [5*i32]
@@ -343,6 +343,7 @@ enum GlobalValueSummarySymtabCodes {
   //  nummib x alloc type,
   //  numver x version]
   FS_COMBINED_ALLOC_INFO_NO_CONTEXT = 33,
+  FS_SECTION_INFO = 34,
 };
 
 enum MetadataCodes {

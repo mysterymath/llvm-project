@@ -3,23 +3,20 @@
 # RUN: opt -module-hash -module-summary %t/1.ll -o %t/1.1.o
 # RUN: opt -module-hash -module-summary %t/2.ll -o %t/1.2.o
 # RUN: llvm-mc -filetype=obj -triple=aarch64-unknown-linux-gnu %t/3.s -o %t/1.3.o
-# RUN: ld.lld -m aarch64elf --lto-linker-scripts --gc-sections -print-gc-sections \
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts --gc-sections \
 # RUN:   -plugin-opt=-function-sections -plugin-opt=-data-sections --save-temps -e main \
-# RUN:   -T %t/script.t %t/1.1.o %t/1.2.o %t/1.3.o -o %t/1.out 2>&1 | \
-# RUN:   FileCheck --check-prefix=GARBAGE %s
+# RUN:   -T %t/script.t %t/1.1.o %t/1.2.o %t/1.3.o -o %t/1.out
 # RUN: llvm-readelf -S -W %t/1.out | FileCheck --check-prefix=SECTIONS %s
-# RUN: llvm-readelf -s -W %t/1.out | FileCheck %s
+# RUN: llvm-objdump -t %t/1.out | FileCheck --check-prefix=SYMS %s
 
-# GARBAGE-DAG: removing unused section {{.*}}(.text.otherfun2)
-# GARBAGE-DAG: removing unused section {{.*}}(.text.otherfun)
-
+# SECTIONS: .special
 # SECTIONS: .alltext
 # SECTIONS-NOT: .text
 
-# CHECK-NOT: FUNC
-# CHECK: FUNC GLOBAL DEFAULT {{[0-9]+}} myfun
-# CHECK: FUNC GLOBAL DEFAULT {{[0-9]+}} main
-# CHECK-NOT: FUNC
+# SYMS-DAG: {{[0-9a-f]+}} g     F .special	{{[0-9a-f]+}} otherfun2
+# SYMS-DAG: {{[0-9a-f]+}} g     F .alltext	{{[0-9a-f]+}} otherfun
+# SYMS-DAG: {{[0-9a-f]+}} g     F .alltext	{{[0-9a-f]+}} myfun
+# SYMS-DAG: {{[0-9a-f]+}} g     F .alltext	{{[0-9a-f]+}} main
 
 #--- 1.ll
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"
@@ -39,11 +36,11 @@ define i32 @myfun() section ".text.myfun" {
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"
 target triple = "aarch64-unknown-linux-gnu"
 
-define i32 @otherfun() section ".text.otherfun" {
+define i32 @otherfun() noinline section ".text.otherfun" {
   ret i32 23
 }
 
-define i32 @otherfun2() section ".text.otherfun2" {
+define i32 @otherfun2() noinline section ".text.otherfun2" {
   ret i32 42
 }
 

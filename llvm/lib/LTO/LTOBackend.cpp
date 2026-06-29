@@ -593,6 +593,14 @@ Error lto::finalizeOptimizationRemarks(LLVMRemarkFileHandle DiagOutputFile) {
   return Error::success();
 }
 
+#include "llvm/Transforms/Utils/ModuleUtils.h"
+#include "llvm/LTO/LTOBackend.h"
+#include "llvm/Transforms/Utils/SplitModule.h"
+
+using namespace llvm;
+
+
+
 Error lto::backend(const Config &C, AddStreamFn AddStream,
                    unsigned ParallelCodeGenParallelismLevel, Module &Mod,
                    ModuleSummaryIndex &CombinedIndex,
@@ -625,12 +633,14 @@ static void dropDeadSymbols(Module &Mod, const GVSummaryMapTy &DefinedGlobals,
                             const ModuleSummaryIndex &Index) {
   llvm::TimeTraceScope timeScope("Drop dead symbols");
   std::vector<GlobalValue*> DeadGVs;
-  for (auto &GV : Mod.global_values())
-    if (GlobalValueSummary *GVS = DefinedGlobals.lookup(GV.getGUID()))
+  for (auto &GV : Mod.global_values()) {
+    if (GlobalValueSummary *GVS = DefinedGlobals.lookup(GV.getGUID())) {
       if (!Index.isGlobalValueLive(GVS)) {
         DeadGVs.push_back(&GV);
         convertToDeclaration(GV);
       }
+    }
+  }
 
   // Now that all dead bodies have been dropped, delete the actual objects
   // themselves when possible.
@@ -768,6 +778,20 @@ Error lto::thinBackend(const Config &Conf, unsigned Task, AddStreamFn AddStream,
                               ClearDSOLocalOnDeclarations);
     if (Error Err = Importer.importFunctions(Mod, ImportList).takeError())
       return Err;
+  }
+
+  for (GlobalObject &GO : Mod.global_objects()) {
+    if (GO.isDeclaration() || GO.getName().starts_with("llvm."))
+      continue;
+    auto It = CombinedIndex.sectionInfos().find(GO.getGUID());
+    if (It != CombinedIndex.sectionInfos().end()) {
+      if (!It->second.OutputSectionName.empty()) {
+        if (auto *F = dyn_cast<Function>(&GO))
+          F->addFnAttr("linker_output_section", It->second.OutputSectionName);
+        else if (auto *GV = dyn_cast<GlobalVariable>(&GO))
+          GV->addAttribute("linker_output_section", It->second.OutputSectionName);
+      }
+    }
   }
 
   // Do this after any importing so that imported code is updated.

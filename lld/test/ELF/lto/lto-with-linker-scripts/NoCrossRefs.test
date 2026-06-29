@@ -1,8 +1,9 @@
 # REQUIRES: aarch64
-
 # RUN: rm -rf %t && split-file %s %t
-# RUN: llvm-as %t/1.ll -o %t/1.o
 # RUN: mkdir -p %t/archive
+#
+# Check Regular LTO
+# RUN: llvm-as %t/1.ll -o %t/1.o
 # RUN: llvm-as %t/2.ll -o %t/archive/2.o
 # RUN: llvm-ar cr %t/lib1.a %t/archive/2.o
 # RUN: not ld.lld -m aarch64elf %t/1.o -T %t/script.t %t/lib1.a -e main \
@@ -11,6 +12,18 @@
 # RUN: ld.lld -m aarch64elf %t/1.o -T %t/script.gc %t/lib1.a --gc-sections -o %t/2.out --entry=main
 # RUN: not ld.lld -m aarch64elf %t/1.o -T %t/script.dbg %t/lib1.a -e main -o %t/3.out 2>&1 | \
 # RUN:   FileCheck %s --check-prefix=DBG
+#
+# Check ThinLTO
+# RUN: opt -thinlto-bc %t/1.ll -o %t/1.o
+# RUN: opt -thinlto-bc %t/2.ll -o %t/archive/2.o
+# RUN: llvm-ar cr %t/lib1.a %t/archive/2.o
+# RUN: not ld.lld -m aarch64elf %t/1.o -T %t/script.t %t/lib1.a -e main \
+# RUN:   -plugin-opt=-function-sections -o %t/1.out --error-limit 0 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=REGULAR
+# RUN: ld.lld -m aarch64elf %t/1.o -T %t/script.gc %t/lib1.a --gc-sections -o %t/2.out --entry=main
+# RUN: not ld.lld -m aarch64elf %t/1.o -T %t/script.dbg %t/lib1.a -e main -o %t/3.out 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=DBG
+
 
 # Test normal cross-reference prohibition between commons and sections.
 # REGULAR: .text.main{{.*}}: prohibited cross reference from '.text' to '.text.baz' in '.baz'

@@ -1,11 +1,20 @@
 # REQUIRES: aarch64
-
 # RUN: rm -rf %t && split-file %s %t
+#
+# Check Regular LTO
 # RUN: llvm-as %t/1.ll -o %t/1.o
 # RUN: llvm-as %t/2.ll -o %t/2.o
-# RUN: ld.lld -m aarch64elf --lto-linker-scripts -T %t/script.t -plugin-opt=O0 \
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts -e main -T %t/script.t -plugin-opt=O0 \
 # RUN:   -plugin-opt=-data-sections -plugin-opt=-function-sections %t/1.o %t/2.o -o %t/out
 # RUN: llvm-readelf -S -W %t/out | FileCheck %s --check-prefix=SEC
+#
+# Check ThinLTO
+# RUN: opt -thinlto-bc %t/1.ll -o %t/1.o
+# RUN: opt -thinlto-bc %t/2.ll -o %t/2.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts -e main -T %t/script.t -plugin-opt=O0 \
+# RUN:   -plugin-opt=-data-sections -plugin-opt=-function-sections %t/1.o %t/2.o -o %t/out
+# RUN: llvm-readelf -S -W %t/out | FileCheck %s --check-prefix=SEC
+
 
 # SEC:  .mydata1          PROGBITS
 # SEC:  .mydata2          PROGBITS
@@ -18,11 +27,16 @@ target triple = "aarch64-unknown-linux-gnu"
 
 declare i32 @baz()
 
-define i32 @foo() section ".text.foo" {
+define i32 @foo() noinline section ".text.foo" {
   %a = load i32, ptr @bar
   %b = call i32 @baz()
   %c = add i32 %a, %b
   ret i32 %c
+}
+
+define i32 @main() {
+  %r = call i32 @foo()
+  ret i32 %r
 }
 
 #--- 2.ll
@@ -31,7 +45,7 @@ target triple = "aarch64-unknown-linux-gnu"
 
 @bar = internal global i64 30, section ".data.bar"
 
-define i32 @baz() section ".text.baz" {
+define i32 @baz() noinline section ".text.baz" {
   %a = load i64, ptr @bar
   %b = trunc i64 %a to i32
   ret i32 %b

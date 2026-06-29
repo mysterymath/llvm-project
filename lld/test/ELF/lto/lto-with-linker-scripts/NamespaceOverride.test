@@ -1,10 +1,17 @@
 # REQUIRES: aarch64
-
 # RUN: rm -rf %t && split-file %s %t
-# RUN: llvm-as %t/A.ll -o %t/A.o
 # RUN: llvm-mc -filetype=obj -triple=aarch64-unknown-linux-gnu %t/B.s -o %t/B.o
+#
+# Check Regular LTO
+# RUN: llvm-as %t/A.ll -o %t/A.o
 # RUN: ld.lld -m aarch64elf --lto-linker-scripts -Map=%t/map.txt -T %t/script.t %t/A.o %t/B.o -o %t/out
 # RUN: FileCheck %s --check-prefix=MAP < %t/map.txt
+#
+# Check ThinLTO
+# RUN: opt -thinlto-bc %t/A.ll -o %t/A.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts -Map=%t/map.txt -T %t/script.t %t/A.o %t/B.o -o %t/out
+# RUN: FileCheck %s --check-prefix=MAP < %t/map.txt
+
 
 # MAP: .foo
 # MAP: __foo_A

@@ -38,6 +38,7 @@ class PassPlugin;
 
 namespace lto {
 
+
 /// LTO configuration. A linker can configure LTO by setting fields in this data
 /// structure and passing it to the lto::LTO constructor.
 struct Config {

@@ -49,6 +49,7 @@ LLVM_ABI Error backend(const Config &C, AddStreamFn AddStream,
                        ModuleSummaryIndex &CombinedIndex,
                        ArrayRef<StringRef> BitcodeLibFuncs);
 
+
 /// Runs a ThinLTO backend.
 /// If \p ModuleMap is not nullptr, all the module files to be imported have
 /// already been mapped to memory and the corresponding BitcodeModule objects
@@ -68,6 +69,7 @@ LLVM_ABI Error thinBackend(
     const std::vector<uint8_t> &CmdArgs = std::vector<uint8_t>());
 
 LLVM_ABI Error finalizeOptimizationRemarks(LLVMRemarkFileHandle DiagOutputFile);
+
 
 /// Returns the BitcodeModule that is ThinLTO.
 LLVM_ABI BitcodeModule *findThinLTOModule(MutableArrayRef<BitcodeModule> BMs);

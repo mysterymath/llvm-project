@@ -22,6 +22,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -117,6 +118,8 @@ struct SectionResolution {
   bool Keep = false;
 };
 
+using SectionResolverFn = llvm::function_ref<SectionResolution(StringRef SectionName)>;
+
 /// An input file. This is a symbol table wrapper that only exposes the
 /// information that an LTO client should need in order to do symbol resolution.
 class InputFile {
@@ -153,6 +156,8 @@ private:
 
 public:
   LLVM_ABI ~InputFile();
+
+  unsigned getTUIndex() const { return TUIndex; }
 
   /// Create an InputFile.
   LLVM_ABI static Expected<std::unique_ptr<InputFile>>
@@ -456,7 +461,7 @@ public:
   /// InputFile::symbols().
   LLVM_ABI Error add(std::unique_ptr<InputFile> Obj,
                      ArrayRef<SymbolResolution> Res,
-                     StringMap<SectionResolution> SectionRes = {});
+                     SectionResolverFn SectionResolver = {});
 
   /// Set the list of functions implemented in bitcode that were not extracted
   /// from an archive. Such functions may not be referenced, as they have
@@ -636,18 +641,21 @@ private:
   // to the resolutions for the remaining modules in the InputFile.
   Expected<ArrayRef<SymbolResolution>>
   addModule(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
-            unsigned ModI, ArrayRef<SymbolResolution> Res);
+            unsigned ModI, ArrayRef<SymbolResolution> Res,
+            SectionResolverFn SectionResolver);
 
   Expected<std::pair<RegularLTOState::AddedModule, ArrayRef<SymbolResolution>>>
   addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
                 BitcodeModule BM, ArrayRef<InputFile::Symbol> Syms,
-                ArrayRef<SymbolResolution> Res);
+                ArrayRef<SymbolResolution> Res,
+                SectionResolverFn SectionResolver);
   Error linkRegularLTO(RegularLTOState::AddedModule Mod,
                        bool LivenessFromIndex);
 
   Expected<ArrayRef<SymbolResolution>>
   addThinLTO(BitcodeModule BM, ArrayRef<InputFile::Symbol> Syms,
-             ArrayRef<SymbolResolution> Res);
+             ArrayRef<SymbolResolution> Res,
+             SectionResolverFn SectionResolver);
 
   Error runRegularLTO(AddStreamFn AddStream);
   Error runThinLTO(AddStreamFn AddStream, FileCache Cache,
@@ -688,7 +696,7 @@ private:
   SmallVector<StringRef> BitcodeLibFuncs;
 
   unsigned NumTUs = 0;
-  SmallVector<StringMap<SectionResolution>, 0> TUSectionResolutions;
+
 
 public:
   /// Helper to emit an optimization remark during the LTO link when outside of

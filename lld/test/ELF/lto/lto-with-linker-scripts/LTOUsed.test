@@ -1,6 +1,13 @@
 # REQUIRES: aarch64
 # RUN: rm -rf %t && split-file %s %t
+#
+# Check Regular LTO
 # RUN: llvm-as %t/used.ll -o %t/used.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts %t/used.o -e foo -o %t/out
+# RUN: llvm-readelf -s -W %t/out | FileCheck %s
+#
+# Check ThinLTO
+# RUN: opt -thinlto-bc %t/used.ll -o %t/used.o
 # RUN: ld.lld -m aarch64elf --lto-linker-scripts %t/used.o -e foo -o %t/out
 # RUN: llvm-readelf -s -W %t/out | FileCheck %s
 

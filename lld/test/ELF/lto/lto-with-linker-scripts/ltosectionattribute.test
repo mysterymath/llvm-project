@@ -5,6 +5,10 @@
 # RUN: llvm-mc -filetype=obj -triple=aarch64-unknown-linux-gnu %t/3.s -o %t/3.o
 # RUN: ld.lld -m aarch64elf --lto-linker-scripts %t/1.o %t/2.o %t/3.o -T %t/script.t -o %t/out
 # RUN: llvm-readelf -S -W %t/out | FileCheck %s
+# RUN: opt -thinlto-bc %t/1.ll -o %t/1.o
+# RUN: opt -thinlto-bc %t/2.ll -o %t/2.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts %t/1.o %t/2.o %t/3.o -T %t/script.t -o %t/out
+# RUN: llvm-readelf -S -W %t/out | FileCheck %s
 
 # CHECK: .myfoo
 # CHECK: .mybar

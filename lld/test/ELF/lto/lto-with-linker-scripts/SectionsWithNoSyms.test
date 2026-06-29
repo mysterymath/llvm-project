@@ -1,10 +1,14 @@
 # REQUIRES: aarch64
-
 # RUN: rm -rf %t && split-file %s %t
 # RUN: llvm-as %t/1.ll -o %t/1.o
 # RUN: ld.lld -m aarch64elf --lto-linker-scripts -e main -T %t/script.t -plugin-opt=O0 \
 # RUN:   -plugin-opt=-data-sections -plugin-opt=-function-sections %t/1.o -o %t/out
 # RUN: llvm-readelf -S %t/out | FileCheck %s --check-prefix=SEC
+# RUN: opt -thinlto-bc %t/1.ll -o %t/1.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts -e main -T %t/script.t -plugin-opt=O0 \
+# RUN:   -plugin-opt=-data-sections -plugin-opt=-function-sections %t/1.o -o %t/out
+# RUN: llvm-readelf -S %t/out | FileCheck %s --check-prefix=SEC
+
 
 # SEC:  .myrodata         PROGBITS{{.*}}000004
 

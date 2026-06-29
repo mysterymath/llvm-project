@@ -178,6 +178,7 @@ static lto::Config createConfig(Ctx &ctx) {
     checkError(ctx.e, c.addSaveTemps(ctx.arg.outputFile.str() + ".",
                                      /*UseInputModulePath*/ true,
                                      ctx.arg.saveTempsArgs));
+
   return c;
 }
 
@@ -302,25 +303,17 @@ void BitcodeCompiler::add(BitcodeFile &f) {
 
   }
 
-  llvm::StringMap<lto::SectionResolution> sectionRes;
   if (ctx.arg.ltoLinkerScripts && ctx.script) {
-    LLVMContext lCtx;
-    std::unique_ptr<Module> M = cantFail(
-        getLazyBitcodeModule(f.mb, lCtx, /*ShouldLazyLoadMetadata=*/true));
-    for (GlobalObject &GO : M->global_objects()) {
-      if (GO.isDeclarationForLinker() || GO.getName().starts_with("llvm."))
-        continue;
-      if (GO.hasSection()) {
-        StringRef secName = GO.getSection();
-        lto::SectionResolution r;
-        r.Keep = ctx.script->shouldKeep(secName, &f);
-        r.OutputSectionName = ctx.script->mapLTOSectionName(secName, &f);
-        sectionRes[secName] = std::move(r);
-      }
-    }
+    auto resolver = [this, &f](StringRef sectionName) {
+      lto::SectionResolution r;
+      r.Keep = ctx.script->shouldKeep(sectionName, &f);
+      r.OutputSectionName = ctx.script->mapLTOSectionName(sectionName, &f);
+      return r;
+    };
+    checkError(ctx.e, ltoObj->add(std::move(f.obj), resols, std::move(resolver)));
+  } else {
+    checkError(ctx.e, ltoObj->add(std::move(f.obj), resols));
   }
-
-  checkError(ctx.e, ltoObj->add(std::move(f.obj), resols, std::move(sectionRes)));
 }
 
 // If LazyObjFile has not been added to link, emit empty index files.

@@ -1,6 +1,14 @@
 # REQUIRES: aarch64
 # RUN: rm -rf %t && split-file %s %t
+#
+# Check Regular LTO
 # RUN: llvm-as %t/foo.ll -o %t/foo.foo.o
+# RUN: ld.lld -m aarch64elf --lto-linker-scripts -T %t/script.t %t/foo.foo.o -e foo \
+# RUN:   -plugin-opt=-function-sections -o %t/out
+# RUN: llvm-readelf -S -s -W %t/out | FileCheck %s --check-prefix=ELF
+#
+# Check ThinLTO
+# RUN: opt -thinlto-bc %t/foo.ll -o %t/foo.foo.o
 # RUN: ld.lld -m aarch64elf --lto-linker-scripts -T %t/script.t %t/foo.foo.o -e foo \
 # RUN:   -plugin-opt=-function-sections -o %t/out
 # RUN: llvm-readelf -S -s -W %t/out | FileCheck %s --check-prefix=ELF
