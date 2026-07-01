@@ -350,6 +350,22 @@ void TargetLoweringObjectFileELF::emitModuleMetadata(MCStreamer &Streamer,
     }
   }
 
+  // Emit LTO TU names.
+  if (NamedMDNode *NMD = M.getNamedMetadata("llvm.lto.tu.names")) {
+    MCSectionELF *LTOTUNamesSection = C.getELFSection(
+        ".llvm.lto.tu.names", ELF::SHT_LLVM_LTO_TU_NAMES, ELF::SHF_EXCLUDE);
+    Streamer.switchSection(LTOTUNamesSection);
+    for (const MDNode *Op : NMD->operands()) {
+      auto *IdxNode = mdconst::dyn_extract<ConstantInt>(Op->getOperand(0));
+      auto *NameNode = cast<MDString>(Op->getOperand(1));
+      if (IdxNode && NameNode) {
+        Streamer.emitULEB128IntValue(IdxNode->getZExtValue());
+        Streamer.emitBytes(NameNode->getString());
+        Streamer.emitInt8(0); // Null terminator
+      }
+    }
+  }
+
   unsigned Version = 0;
   unsigned Flags = 0;
   StringRef Section;

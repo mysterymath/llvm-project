@@ -207,6 +207,9 @@ struct Config {
   /// with llvm-lto2.
   std::unique_ptr<raw_ostream> ResolutionFile;
 
+  /// Whether to emit the LTO TU map.
+  bool EmitLTOTUMap = false;
+
   /// Tunable parameters for passes in the default pipelines.
   PipelineTuningOptions PTO;
 

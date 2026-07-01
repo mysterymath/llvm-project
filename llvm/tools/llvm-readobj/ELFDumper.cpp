@@ -406,6 +406,73 @@ protected:
   const Elf_Shdr *DotSymtabSec = nullptr;
   const Elf_Shdr *DotDynsymSec = nullptr;
   const Elf_Shdr *DotAddrsigSec = nullptr;
+  const Elf_Shdr *DotLTOTUMapSec = nullptr;
+  const Elf_Shdr *DotLTOTUNamesSec = nullptr;
+
+  DenseMap<uint64_t, StringRef> decodeLTOTUNames() {
+    DenseMap<uint64_t, StringRef> Ret;
+    if (!DotLTOTUNamesSec)
+      return Ret;
+    auto ContentsOrErr = Obj.getSectionContents(*DotLTOTUNamesSec);
+    if (!ContentsOrErr) {
+      reportWarning(ContentsOrErr.takeError(), this->FileName);
+      return Ret;
+    }
+    ArrayRef<uint8_t> Contents = *ContentsOrErr;
+    const uint8_t *Cur = Contents.begin();
+    const uint8_t *End = Contents.end();
+    while (Cur < End) {
+      unsigned int Size;
+      const char *Err = nullptr;
+      uint64_t Index = decodeULEB128(Cur, &Size, End, &Err);
+      if (Err) {
+        reportWarning(createError(Err), this->FileName);
+        break;
+      }
+      Cur += Size;
+      if (Cur >= End)
+        break;
+      StringRef Name(reinterpret_cast<const char *>(Cur));
+      Cur += Name.size() + 1;
+      Ret[Index] = Name;
+    }
+    return Ret;
+  }
+
+  DenseMap<uint64_t, uint64_t> decodeLTOTUMap() {
+    DenseMap<uint64_t, uint64_t> Ret;
+    if (!DotLTOTUMapSec)
+      return Ret;
+    auto ContentsOrErr = Obj.getSectionContents(*DotLTOTUMapSec);
+    if (!ContentsOrErr) {
+      reportWarning(ContentsOrErr.takeError(), this->FileName);
+      return Ret;
+    }
+    ArrayRef<uint8_t> Contents = *ContentsOrErr;
+    const uint8_t *Cur = Contents.begin();
+    const uint8_t *End = Contents.end();
+    while (Cur < End) {
+      unsigned int Size;
+      const char *Err = nullptr;
+      uint64_t SecIndex = decodeULEB128(Cur, &Size, End, &Err);
+      if (Err) {
+        reportWarning(createError(Err), this->FileName);
+        break;
+      }
+      Cur += Size;
+      if (Cur >= End)
+        break;
+      uint64_t TUIndex = decodeULEB128(Cur, &Size, End, &Err);
+      if (Err) {
+        reportWarning(createError(Err), this->FileName);
+        break;
+      }
+      Cur += Size;
+      Ret[SecIndex] = TUIndex;
+    }
+    return Ret;
+  }
+
   DenseMap<const Elf_Shdr *, ArrayRef<Elf_Word>> ShndxTables;
   std::optional<uint64_t> SONameOffset;
   std::optional<DenseMap<uint64_t, std::vector<uint32_t>>> AddressToIndexMap;
@@ -2019,6 +2086,14 @@ ELFDumper<ELFT>::ELFDumper(const object::ELFObjectFile<ELFT> &O,
     case ELF::SHT_LLVM_ADDRSIG:
       if (!DotAddrsigSec)
         DotAddrsigSec = &Sec;
+      break;
+    case ELF::SHT_LLVM_LTO_TU_MAP:
+      if (!DotLTOTUMapSec)
+        DotLTOTUMapSec = &Sec;
+      break;
+    case ELF::SHT_LLVM_LTO_TU_NAMES:
+      if (!DotLTOTUNamesSec)
+        DotLTOTUNamesSec = &Sec;
       break;
     }
   }
@@ -4600,6 +4675,14 @@ template <class ELFT> void GNUELFDumper<ELFT>::printHashSymbols() {
 }
 
 template <class ELFT> void GNUELFDumper<ELFT>::printSectionDetails() {
+  // Cache the LTO TU mapping if present
+  DenseMap<uint64_t, uint64_t> LTOTUMap;
+  DenseMap<uint64_t, StringRef> LTOTUNames;
+  if (this->DotLTOTUMapSec) {
+    LTOTUMap = this->decodeLTOTUMap();
+    LTOTUNames = this->decodeLTOTUNames();
+  }
+
   ArrayRef<Elf_Shdr> Sections = cantFail(this->Obj.sections());
   if (Sections.empty()) {
     OS << "\nThere are no sections in this file.\n";
@@ -4705,6 +4788,17 @@ template <class ELFT> void GNUELFDumper<ELFT>::printSectionDetails() {
     PrintUnknownFlags(uint64_t(-1), "UNKNOWN");
 
     OS << "\n";
+    if (this->DotLTOTUMapSec) {
+      auto It = LTOTUMap.find(SectionIndex);
+      if (It != LTOTUMap.end()) {
+        StringRef TUName = LTOTUNames.lookup(It->second);
+        OS.indent(7);
+        if (!TUName.empty())
+          OS << "LTO TU: " << TUName << "\n";
+        else
+          OS << "LTO TU Index: " << It->second << "\n";
+      }
+    }
     ++SectionIndex;
 
     if (!(S.sh_flags & SHF_COMPRESSED))
@@ -7727,6 +7821,14 @@ void LLVMELFDumper<ELFT>::printRelRelaReloc(const Relocation<ELFT> &R,
 template <class ELFT> void LLVMELFDumper<ELFT>::printSectionHeaders() {
   ListScope SectionsD(W, "Sections");
 
+  // Cache the LTO TU mapping if present
+  DenseMap<uint64_t, uint64_t> LTOTUMap;
+  DenseMap<uint64_t, StringRef> LTOTUNames;
+  if (this->DotLTOTUMapSec) {
+    LTOTUMap = this->decodeLTOTUMap();
+    LTOTUNames = this->decodeLTOTUNames();
+  }
+
   int SectionIndex = -1;
   std::vector<EnumEntry<unsigned>> FlagsList =
       getSectionFlagsForTarget(this->Obj.getHeader().e_ident[ELF::EI_OSABI],
@@ -7747,6 +7849,17 @@ template <class ELFT> void LLVMELFDumper<ELFT>::printSectionHeaders() {
     W.printNumber("Info", Sec.sh_info);
     W.printNumber("AddressAlignment", Sec.sh_addralign);
     W.printNumber("EntrySize", Sec.sh_entsize);
+
+    if (this->DotLTOTUMapSec) {
+      auto It = LTOTUMap.find(SectionIndex);
+      if (It != LTOTUMap.end()) {
+        StringRef TUName = LTOTUNames.lookup(It->second);
+        if (!TUName.empty())
+          W.printString("LTOTU", TUName);
+        else
+          W.printNumber("LTOTUIndex", It->second);
+      }
+    }
 
     if (opts::SectionRelocations) {
       ListScope D(W, "Relocations");

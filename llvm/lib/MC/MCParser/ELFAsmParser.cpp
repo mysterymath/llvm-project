@@ -640,6 +640,8 @@ EndStmt:
       Type = ELF::SHT_LLVM_CALL_GRAPH;
     else if (TypeName == "llvm_lto_tu_map")
       Type = ELF::SHT_LLVM_LTO_TU_MAP;
+    else if (TypeName == "llvm_lto_tu_names")
+      Type = ELF::SHT_LLVM_LTO_TU_NAMES;
     else if (TypeName.getAsInteger(0, Type))
       return TokError("unknown section type");
   }

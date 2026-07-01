@@ -697,6 +697,8 @@ private:
 
   unsigned NumTUs = 0;
 
+  SmallVector<std::string, 0> TUNames;
+
 
 public:
   /// Helper to emit an optimization remark during the LTO link when outside of

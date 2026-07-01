@@ -1,0 +1,51 @@
+# REQUIRES: x86
+# RUN: rm -rf %t && split-file %s %t
+# RUN: llvm-as %t/A.ll -o %t/A.o
+# RUN: llvm-as %t/B.ll -o %t/B.o
+# RUN: ld.lld -m elf_x86_64 --lto-linker-scripts -save-temps %t/A.o %t/B.o -o %t/out
+# RUN: llvm-readobj -S %t/out.lto.o | FileCheck %s --check-prefix=LLVM
+# RUN: llvm-readelf -t %t/out.lto.o | FileCheck %s --check-prefix=GNU
+# RUN: llvm-readelf -S %t/out.lto.o | FileCheck %s --check-prefix=GNU-SEC
+
+# LLVM:      Section {
+# LLVM:        Index:
+# LLVM:        Name: .text.Afun
+# LLVM:        LTOTU: {{.*}}A.o
+# LLVM:      }
+# LLVM:      Section {
+# LLVM:        Index:
+# LLVM:        Name: .text.Bfun
+# LLVM:        LTOTU: {{.*}}B.o
+# LLVM:      }
+
+# GNU:       [ {{.*}}] .text.Afun
+# GNU:            LTO TU: {{.*}}A.o
+# GNU:       [ {{.*}}] .text.Bfun
+# GNU:            LTO TU: {{.*}}B.o
+
+# GNU-SEC-NOT: LTO TU
+
+#--- A.ll
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+
+define void @Afun() noinline section ".text.Afun" {
+  call void asm sideeffect "", ""()
+  ret void
+}
+
+define void @_start() {
+  call void @Afun()
+  call void @Bfun()
+  ret void
+}
+declare void @Bfun()
+
+#--- B.ll
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+
+define void @Bfun() noinline section ".text.Bfun" {
+  call void asm sideeffect "", ""()
+  ret void
+}

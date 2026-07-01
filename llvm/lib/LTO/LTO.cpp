@@ -834,6 +834,8 @@ Error LTO::add(std::unique_ptr<InputFile> InputPtr,
     return InputOrErr.takeError();
   InputFile *Input = (*InputOrErr).get();
   Input->TUIndex = NumTUs++;
+  assert(Input->TUIndex == TUNames.size());
+  TUNames.push_back(Input->getName().str());
 
   if (Conf.ResolutionFile)
     writeToResolutionFile(*Conf.ResolutionFile, Input, Res);
@@ -979,14 +981,16 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
     return std::move(Err);
 
   // Attach the "lto.tu" attribute to all defined functions and globals
-  std::string TUIndexStr = std::to_string(Input.TUIndex);
-  for (GlobalObject &GO : M.global_objects()) {
-    if (GO.isDeclaration())
-      continue;
-    if (auto *F = dyn_cast<Function>(&GO))
-      F->addFnAttr("lto.tu", TUIndexStr);
-    else if (auto *GV = dyn_cast<GlobalVariable>(&GO))
-      GV->addAttribute("lto.tu", TUIndexStr);
+  if (Conf.EmitLTOTUMap) {
+    std::string TUIndexStr = std::to_string(Input.TUIndex);
+    for (GlobalObject &GO : M.global_objects()) {
+      if (GO.isDeclaration())
+        continue;
+      if (auto *F = dyn_cast<Function>(&GO))
+        F->addFnAttr("lto.tu", TUIndexStr);
+      else if (auto *GV = dyn_cast<GlobalVariable>(&GO))
+        GV->addAttribute("lto.tu", TUIndexStr);
+    }
   }
 
   if (SectionResolver) {
@@ -1456,6 +1460,21 @@ Error LTO::run(AddStreamFn AddStream, FileCache Cache) {
 
 
 
+static void attachTUMetadata(Module &M, ArrayRef<std::string> TUNames) {
+  if (TUNames.empty())
+    return;
+  NamedMDNode *NMD = M.getOrInsertNamedMetadata("llvm.lto.tu.names");
+  if (NMD->getNumOperands() > 0)
+    return; // Already attached
+  for (unsigned I = 0; I < TUNames.size(); ++I) {
+    Metadata *Ops[] = {
+        ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(M.getContext()), I)),
+        MDString::get(M.getContext(), TUNames[I])
+    };
+    NMD->addOperand(MDNode::get(M.getContext(), Ops));
+  }
+}
+
 Error LTO::runRegularLTO(AddStreamFn AddStream) {
   llvm::TimeTraceScope timeScope("Run regular LTO");
   LLVM_DEBUG(dbgs() << "Running regular LTO\n");
@@ -1574,6 +1593,8 @@ Error LTO::runRegularLTO(AddStreamFn AddStream) {
   }
 
   if (!RegularLTO.EmptyCombinedModule || Conf.AlwaysEmitRegularLTOObj) {
+    if (Conf.EmitLTOTUMap)
+      attachTUMetadata(*RegularLTO.CombinedModule, TUNames);
     if (Error Err = backend(
             Conf, AddStream, RegularLTO.ParallelCodeGenParallelismLevel,
             *RegularLTO.CombinedModule, ThinLTO.CombinedIndex, BitcodeLibFuncs))

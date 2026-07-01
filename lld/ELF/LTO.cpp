@@ -179,6 +179,8 @@ static lto::Config createConfig(Ctx &ctx) {
                                      /*UseInputModulePath*/ true,
                                      ctx.arg.saveTempsArgs));
 
+  c.EmitLTOTUMap = ctx.arg.ltoLinkerScripts;
+
   return c;
 }
 

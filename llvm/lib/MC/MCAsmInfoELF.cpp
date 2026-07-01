@@ -203,6 +203,8 @@ void MCAsmInfoELF::printSwitchToSection(const MCSection &Section,
     OS << "llvm_call_graph";
   else if (Sec.Type == ELF::SHT_LLVM_LTO_TU_MAP)
     OS << "llvm_lto_tu_map";
+  else if (Sec.Type == ELF::SHT_LLVM_LTO_TU_NAMES)
+    OS << "llvm_lto_tu_names";
   else
     OS << "0x" << Twine::utohexstr(Sec.Type);
 
