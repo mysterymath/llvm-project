@@ -1543,7 +1543,8 @@ static void parseIRPGOProfile(Ctx &ctx) {
       }
       for (const DWARFDebugInfoEntry &entry : cu->dies()) {
         DWARFDie die(cu.get(), &entry);
-        if (die.getTag() != dwarf::DW_TAG_subprogram)
+        dwarf::Tag tag = die.getTag();
+        if (tag != dwarf::DW_TAG_subprogram && tag != dwarf::DW_TAG_variable)
           continue;
         const char *name = die.getName(DINameKind::LinkageName);
         if (!name)
@@ -1562,8 +1563,6 @@ static void parseIRPGOProfile(Ctx &ctx) {
     for (auto [secIdx, sec] : llvm::enumerate(obj->getSections())) {
       if (!sec || sec == &InputSection::discarded || !sec->isLive())
         continue;
-      if (!(sec->flags & SHF_EXECINSTR))
-        continue;
       auto *isec = dyn_cast<InputSection>(sec);
       if (!isec)
         continue;
@@ -1575,6 +1574,10 @@ static void parseIRPGOProfile(Ctx &ctx) {
       if (it != secToSubprograms.end()) {
         foundProfile = true;
         for (const ProfiledRange &range : it->second) {
+          if (range.die.getTag() == dwarf::DW_TAG_variable) {
+            count += range.samples->getTotalSamples();
+            continue;
+          }
           uint64_t startLine = range.die.getDeclLine();
           DWARFUnit *targetCU = range.die.getDwarfUnit();
 
@@ -1602,6 +1605,8 @@ static void parseIRPGOProfile(Ctx &ctx) {
       if (!foundProfile) {
         // Fallback to symbol table.
         Defined *sym = isec->getEnclosingFunction(0);
+        if (!sym)
+          sym = isec->getEnclosingSymbol(0);
         if (sym) {
           auto profIt = profiles.find(sampleprof::FunctionId(sym->getName()));
           if (profIt != profiles.end()) {
